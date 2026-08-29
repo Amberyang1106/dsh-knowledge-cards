@@ -1,0 +1,10 @@
+# --- node ---
+node_modules/
+*.tsbuildinfo
+
+# --- runtime data (never commit) ---
+# the plugin's knowledge bases live in ~/.dsh/knowledge-cards, not here
+
+# --- misc ---
+.DS_Store
+Thumbs.db

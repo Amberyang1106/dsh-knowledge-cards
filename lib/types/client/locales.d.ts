@@ -1,0 +1,88 @@
+/**
+ * Locale dictionaries for the knowledge-cards panel.
+ * @module dsh-knowledge-cards/client/locales
+ */
+export declare const NS = "dsh-knowledge-cards";
+declare const zh: {
+    readonly 'entry.label': "知识卡片";
+    readonly 'entry.tooltip': "浏览与维护知识卡片库";
+    readonly 'panel.title': "知识卡片";
+    readonly 'kb.placeholder': "选择知识库";
+    readonly 'kb.empty': "还没有知识库 — 在「知识库」标签创建";
+    readonly 'tab.cards': "卡片";
+    readonly 'tab.sources': "资料";
+    readonly 'tab.code': "代码";
+    readonly 'tab.board': "看板";
+    readonly 'tab.review': "审核";
+    readonly 'tab.kbs': "知识库";
+    readonly 'review.all': "全部";
+    readonly 'review.pending': "待处理 {n}";
+    readonly 'review.hint': "摄入时 agent 标记的需人工判断项，处理不阻塞摄入";
+    readonly 'review.empty': "审核队列为空。";
+    readonly 'review.status.pending': "待处理";
+    readonly 'review.status.resolved': "已完成";
+    readonly 'review.status.skipped': "已跳过";
+    readonly 'review.resolve': "✓ 完成";
+    readonly 'review.skip': "跳过";
+    readonly 'audit.run': "审核知识库";
+    readonly 'audit.deep': "复制深度审核指令";
+    readonly 'audit.hint': "确定性扫描（重复/断链）即时入队；语义级审核交给 agent";
+    readonly 'audit.result': "新增 {n} 条审核项（重复 {dup} · 缺失页面 {missing}），跳过已有 pending {skipped} 条";
+    readonly 'audit.copied': "已复制深度审核指令，发给 agent 即可";
+    readonly 'review.create.title': "从审核项创建卡片";
+    readonly 'review.create.save': "创建并完成";
+    readonly 'edit.button': "编辑";
+    readonly 'edit.save': "保存";
+    readonly 'edit.title': "编辑卡片";
+    readonly 'card.cancel': "取消";
+    readonly 'card.title': "标题";
+    readonly 'card.desc': "摘要";
+    readonly 'card.body': "正文（Markdown，[[wikilink]] 互链）";
+    readonly 'log.all': "全部";
+    readonly 'log.count': "显示 {n} / 共 {total} 条";
+    readonly 'log.empty': "暂无日志记录。";
+    readonly 'code.upload': "上传代码";
+    readonly 'code.count': "{n} 个代码文件";
+    readonly 'code.hint': "代码原样保存（不经 LLM 拆分），其他项目会话可用 wiki_code_list / wiki_code_read 读取作为参考。";
+    readonly 'code.empty': "还没有代码文件 — 点「上传代码」选择文件。";
+    readonly 'search.placeholder': "搜索卡片（标题 / 描述 / 标签 / 正文）";
+    readonly 'filter.all': "全部";
+    readonly 'cards.empty': "没有卡片。把资料放进 raw/sources/ 后，告诉 agent「摄入 <资料>」，或用 wiki_ingest → wiki_commit。";
+    readonly 'cards.total': "共 {total} 张";
+    readonly 'card.back': "← 返回";
+    readonly 'card.sources': "来源";
+    readonly 'card.related': "关联";
+    readonly 'card.tags': "标签";
+    readonly 'card.created': "创建";
+    readonly 'card.updated': "更新";
+    readonly 'card.wikilink': "[[{slug}]]";
+    readonly 'sources.pending': "{n} 份待摄入";
+    readonly 'sources.empty': "raw/sources/ 为空 — 把文档放进去后刷新。";
+    readonly 'sources.status.new': "新增";
+    readonly 'sources.status.changed': "变更";
+    readonly 'sources.status.up-to-date': "已摄入";
+    readonly 'sources.copyPrompt': "复制摄入指令";
+    readonly 'sources.promptCopied': "已复制：把指令发给 agent 即可摄入";
+    readonly 'sources.ingestHint': "摄入由 agent 执行：复制下方指令发给当前会话，agent 会按两步法分析资料并生成卡片。";
+    readonly 'kbs.add': "新建知识库";
+    readonly 'kbs.name': "名称";
+    readonly 'kbs.path': "路径（可选，默认 ~/.dsh/knowledge-cards/kbs/<id>）";
+    readonly 'kbs.description': "描述（可选）";
+    readonly 'kbs.create': "创建";
+    readonly 'kbs.empty': "还没有知识库。";
+    readonly 'kbs.created': "已创建";
+    readonly 'kbs.stats': "{total} 卡片 · {sources} 资料";
+    readonly 'error.load': "加载失败：{message}";
+    readonly refresh: "刷新";
+    readonly 'lint.run': "运行 lint";
+    readonly 'lint.result': "lint：{errors} error / {warns} warn";
+    readonly close: "关闭";
+};
+declare const en: Record<keyof typeof zh, string>;
+export type KnowledgeCardsKey = keyof typeof zh;
+export declare function t(locale: {
+    zh: typeof zh;
+    en: typeof en;
+} | undefined, key: KnowledgeCardsKey, params?: Record<string, string | number>): string;
+export { zh, en };
+//# sourceMappingURL=locales.d.ts.map
