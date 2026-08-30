@@ -14,9 +14,10 @@ import { searchCards } from '../core/search.ts'
 import { auditKb, buildDeepAuditPromptForKb } from './audit.ts'
 import { lintKb } from './lint.ts'
 import {
-  addReview, commitPages, createKb, deleteCodeFile, editCard, getKb, importCards, kbSummary, listCards,
-  listCodeFiles, listKbSummaries, listLogEntries, listReviews, listSources, pendingSources, readCard,
-  readCodeFile, rebuildAggregates, resolveReview, writeCodeFile,
+  addReview, commitPages, createCard, createKb, deleteCard, deleteCodeFile, deleteKb, editCard, getKb, importCards,
+  kbSummary, listCards, listCodeFiles, listKbSummaries, listLogEntries, listReviews, listSources, listTrash,
+  pendingSources, purgeCard, purgeKb, readCard, readCodeFile, rebuildAggregates, resolveReview, restoreCard,
+  restoreKb, writeCodeFile,
 } from './store.ts'
 
 /** Body cap: raised to fit code-file uploads (JSON base64/utf8 text). */
@@ -531,6 +532,160 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
           const kb = await getKb(kbId)
           if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
           ok(res, { prompt: await buildDeepAuditPromptForKb(kb) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
+        }
+      },
+    },
+    // ------------------------------------------------------------ card create (manual, panel form)
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/card/create',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          const type = asString(body?.type).trim()
+          const title = asString(body?.title).trim()
+          if (type === '' || title === '') return json(res, { ok: false, error: 'type and title are required' }, 400)
+          const result = await createCard(kb, {
+            type,
+            title,
+            description: body?.description !== undefined ? asString(body.description).trim() || undefined : undefined,
+            tags: asStringArray(body?.tags),
+            related: asStringArray(body?.related),
+            sources: asStringArray(body?.sources),
+            body: asString(body?.body),
+          })
+          ok(res, { result })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 400)
+        }
+      },
+    },
+    // ------------------------------------------------------------ card delete / restore / purge
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/card/delete',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          const slug = asString(body?.slug)
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          if (slug === '') return json(res, { ok: false, error: 'slug is required' }, 400)
+          ok(res, { deleted: await deleteCard(kb, slug) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 400)
+        }
+      },
+    },
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/card/restore',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          const slug = asString(body?.slug)
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          if (slug === '') return json(res, { ok: false, error: 'slug is required' }, 400)
+          ok(res, { restored: await restoreCard(kb, slug) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 400)
+        }
+      },
+    },
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/card/purge',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          const slug = asString(body?.slug)
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          if (slug === '') return json(res, { ok: false, error: 'slug is required' }, 400)
+          ok(res, { purged: await purgeCard(kb, slug) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 400)
+        }
+      },
+    },
+    // ------------------------------------------------------------ knowledge-base delete / restore / purge
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/kbs/delete',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          if (kbId === '') return json(res, { ok: false, error: 'kb is required' }, 400)
+          ok(res, { deleted: await deleteKb(kbId) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 400)
+        }
+      },
+    },
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/kbs/restore',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          if (kbId === '') return json(res, { ok: false, error: 'kb is required' }, 400)
+          const result = await restoreKb(kbId)
+          ok(res, { kb: await kbSummary(result.kb) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 400)
+        }
+      },
+    },
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/kbs/purge',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          if (kbId === '') return json(res, { ok: false, error: 'kb is required' }, 400)
+          ok(res, { purged: await purgeKb(kbId) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 400)
+        }
+      },
+    },
+    // ------------------------------------------------------------ recycle bin listing
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/trash',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'GET') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const url = new URL(req.url ?? '/', 'http://localhost')
+          const kbId = queryParam(url, 'kb')
+          ok(res, await listTrash(kbId !== '' ? kbId : undefined))
         } catch (error) {
           json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
         }

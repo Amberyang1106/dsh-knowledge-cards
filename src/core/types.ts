@@ -166,3 +166,30 @@ export const REVIEW_OPTIONS: Record<ReviewKind, string[]> = {
   'missing-page': ['创建页面', '深度研究', '跳过'],
   suggestion: ['创建页面', '深度研究', '跳过'],
 }
+
+/** One soft-deleted card sitting in a KB's recycle bin (.trash/cards/). */
+export interface TrashCardEntry {
+  /** File stem of the card (same as when it lived in wiki/). */
+  slug: string
+  /** wiki-relative path before deletion (e.g. `concepts/foo.md`). */
+  originalPath: string
+  type: string
+  title: string
+  description?: string
+  /** Absolute path inside the recycle bin. */
+  trashPath: string
+  deletedAt: number
+}
+
+/** One soft-deleted knowledge base in the config-root recycle bin (.trash/kbs/). */
+export interface TrashKbEntry {
+  id: string
+  name: string
+  /** Absolute path of the KB directory before deletion. */
+  originalPath: string
+  description?: string
+  createdAt?: number
+  deletedAt: number
+  /** Absolute path of the trashed KB directory. */
+  trashPath: string
+}

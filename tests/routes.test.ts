@@ -77,7 +77,7 @@ describe('knowledge routes over HTTP', () => {
     process.env.DSH_KNOWLEDGE_CARDS_ROOT = root
     const { ctx, routes } = makeStubCtx()
     apply(ctx as never)
-    expect(routes.length).toBe(17)
+    expect(routes.length).toBe(25)
     server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const route = routes.find((candidate) => candidate.kind === 'exact' && candidate.path === url.pathname)
@@ -344,5 +344,89 @@ describe('knowledge routes over HTTP', () => {
     // its own item, so the full queue is 3).
     const reviews = await jsonRequest(port, 'GET', `/api/dsh-knowledge/reviews?kb=${encodeURIComponent(kbId)}&status=pending`)
     expect((reviews.data.items as unknown[]).length).toBe(2)
+  })
+
+  it('creates a card manually, then deletes → trash → restore → purge', async () => {
+    // manual create via the panel form path (empty body allowed)
+    const created = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/create', {
+      kb: kbId,
+      type: 'concept',
+      title: '手写卡片',
+      description: '面板新建',
+      tags: ['手动'],
+      related: ['成本分摊'],
+      sources: [],
+      body: '',
+    })
+    expect(created.data.ok).toBe(true)
+    const createdResult = created.data.result as { created: string[]; card: { slug: string; title: string; body: string } }
+    expect(createdResult.created.length).toBe(1)
+    const slug = createdResult.card.slug
+
+    // the manual create lands in the log under the `create` action
+    const log = await jsonRequest(port, 'GET', `/api/dsh-knowledge/log?kb=${encodeURIComponent(kbId)}&action=create`)
+    expect((log.data.entries as Array<{ subject: string }>).some((entry) => entry.subject === '手写卡片')).toBe(true)
+
+    // soft delete → gone from cards, present in trash
+    const deleted = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/delete', { kb: kbId, slug })
+    expect(deleted.data.ok).toBe(true)
+    const afterDelete = await jsonRequest(port, 'GET', `/api/dsh-knowledge/cards?kb=${encodeURIComponent(kbId)}`)
+    expect((afterDelete.data.cards as Array<{ slug: string }>).some((card) => card.slug === slug)).toBe(false)
+    const trashAfterDelete = await jsonRequest(port, 'GET', `/api/dsh-knowledge/trash?kb=${encodeURIComponent(kbId)}`)
+    const trashedCards = trashAfterDelete.data.cards as Array<{ slug: string; originalPath: string }>
+    expect(trashedCards.some((card) => card.slug === slug)).toBe(true)
+    expect(trashedCards.find((card) => card.slug === slug)?.originalPath).toContain('concepts/')
+
+    // restore → back in cards, gone from trash
+    const restored = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/restore', { kb: kbId, slug })
+    expect(restored.data.ok).toBe(true)
+    const afterRestore = await jsonRequest(port, 'GET', `/api/dsh-knowledge/cards?kb=${encodeURIComponent(kbId)}`)
+    expect((afterRestore.data.cards as Array<{ slug: string }>).some((card) => card.slug === slug)).toBe(true)
+
+    // delete again then purge → gone from trash too
+    await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/delete', { kb: kbId, slug })
+    const purged = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/purge', { kb: kbId, slug })
+    expect(purged.data.ok).toBe(true)
+    const trashAfterPurge = await jsonRequest(port, 'GET', `/api/dsh-knowledge/trash?kb=${encodeURIComponent(kbId)}`)
+    expect((trashAfterPurge.data.cards as Array<{ slug: string }>).some((card) => card.slug === slug)).toBe(false)
+
+    // unknown trash entry → 400 with a clear error
+    const missingRestore = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/restore', { kb: kbId, slug: 'nope' })
+    expect(missingRestore.status).toBe(400)
+    expect(String(missingRestore.data.error)).toContain('回收站')
+  })
+
+  it('deletes a knowledge base to the trash and restores it with its review queue', async () => {
+    // seed a review that should follow the KB into the trash
+    await jsonRequest(port, 'POST', '/api/dsh-knowledge/reviews', {
+      kb: kbId, kind: 'suggestion', title: '删库测试审核', summary: '随库进回收站',
+    })
+
+    // soft delete the KB → unregistered, present in the trash (global listing)
+    const deleted = await jsonRequest(port, 'POST', '/api/dsh-knowledge/kbs/delete', { kb: kbId })
+    expect(deleted.data.ok).toBe(true)
+    const afterDelete = await jsonRequest(port, 'GET', '/api/dsh-knowledge/kbs')
+    expect((afterDelete.data.kbs as Array<{ id: string }>).some((kb) => kb.id === kbId)).toBe(false)
+    const trashAfterDelete = await jsonRequest(port, 'GET', `/api/dsh-knowledge/trash?kb=${encodeURIComponent(kbId)}`)
+    expect((trashAfterDelete.data.kbs as Array<{ id: string }>).some((kb) => kb.id === kbId)).toBe(true)
+
+    // restore → re-registered, review queue back
+    const restored = await jsonRequest(port, 'POST', '/api/dsh-knowledge/kbs/restore', { kb: kbId })
+    expect(restored.data.ok).toBe(true)
+    const afterRestore = await jsonRequest(port, 'GET', '/api/dsh-knowledge/kbs')
+    expect((afterRestore.data.kbs as Array<{ id: string }>).some((kb) => kb.id === kbId)).toBe(true)
+    const reviews = await jsonRequest(port, 'GET', `/api/dsh-knowledge/reviews?kb=${encodeURIComponent(kbId)}`)
+    expect((reviews.data.items as Array<{ title: string }>).some((item) => item.title === '删库测试审核')).toBe(true)
+
+    // delete again then purge → gone from the trash too
+    await jsonRequest(port, 'POST', '/api/dsh-knowledge/kbs/delete', { kb: kbId })
+    const purged = await jsonRequest(port, 'POST', '/api/dsh-knowledge/kbs/purge', { kb: kbId })
+    expect(purged.data.ok).toBe(true)
+    const trashAfterPurge = await jsonRequest(port, 'GET', '/api/dsh-knowledge/trash')
+    expect((trashAfterPurge.data.kbs as Array<{ id: string }>).some((kb) => kb.id === kbId)).toBe(false)
+
+    // restoring an unknown trashed KB → 400
+    const missingRestore = await jsonRequest(port, 'POST', '/api/dsh-knowledge/kbs/restore', { kb: 'ghost' })
+    expect(missingRestore.status).toBe(400)
   })
 })

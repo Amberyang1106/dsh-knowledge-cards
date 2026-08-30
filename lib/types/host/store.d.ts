@@ -17,7 +17,7 @@
  * @module dsh-knowledge-cards/host/store
  */
 import { extractWikilinks } from '../core/search.ts';
-import type { Card, CardMeta, CommitResult, KbConfig, KbSummary, PageInput, ReviewItem, ReviewKind, SourceStatus } from '../core/types.ts';
+import type { Card, CardMeta, CommitResult, KbConfig, KbSummary, PageInput, ReviewItem, ReviewKind, SourceStatus, TrashCardEntry, TrashKbEntry } from '../core/types.ts';
 /** Config/cache root for the plugin. Override via env for tests. */
 export declare function configRoot(): string;
 export declare function sha256Of(buffer: Buffer): string;
@@ -48,9 +48,20 @@ export interface LogEntry {
 export declare function listLogEntries(kb: KbConfig): Promise<LogEntry[]>;
 /** Write agent-generated pages into the wiki + maintain aggregates + cache. */
 export declare function commitPages(kb: KbConfig, pages: PageInput[], sourceFiles: string[], options?: {
-    logAction?: 'ingest' | 'import';
+    logAction?: 'ingest' | 'import' | 'create';
     extraNotes?: string[];
 }): Promise<CommitResult>;
+/**
+ * Manually create one card from the panel form (the counterpart of the
+ * agent's /commit path). Same deterministic pipeline as commitPages — new
+ * page, frontmatter validation, index/log/overview maintenance — with a
+ * `create` log action so the 看板 can distinguish manual cards from ingest.
+ */
+export declare function createCard(kb: KbConfig, input: PageInput): Promise<{
+    created: string[];
+    logEntry: string;
+    card: Card;
+}>;
 export declare function listSources(kb: KbConfig): Promise<SourceStatus[]>;
 /** Sources that still need ingest (new or changed). */
 export declare function pendingSources(kb: KbConfig): Promise<SourceStatus[]>;
@@ -109,6 +120,41 @@ export declare function readCodeFile(kb: KbConfig, relPath: string): Promise<str
 export declare function writeCodeFile(kb: KbConfig, relPath: string, content: string): Promise<CodeFileInfo>;
 /** Delete one code file. */
 export declare function deleteCodeFile(kb: KbConfig, relPath: string): Promise<boolean>;
+/** List every soft-deleted card of one KB (parsed from trash files). */
+export declare function listTrashedCards(kb: KbConfig): Promise<TrashCardEntry[]>;
+/** Soft-delete one card: move its file into the KB recycle bin, rebuild
+ * index/overview and append a `delete` log entry. */
+export declare function deleteCard(kb: KbConfig, slug: string): Promise<{
+    trashPath: string;
+}>;
+/** Restore one card from the recycle bin back to wiki/ (conflict-guarded). */
+export declare function restoreCard(kb: KbConfig, slug: string): Promise<{
+    path: string;
+}>;
+/** Permanently remove one card from the recycle bin (not recoverable). */
+export declare function purgeCard(kb: KbConfig, slug: string): Promise<{
+    purged: boolean;
+}>;
+/** List every soft-deleted knowledge base in the config-root recycle bin. */
+export declare function listTrashedKbs(): Promise<TrashKbEntry[]>;
+/** Soft-delete one knowledge base: move its whole directory (with trash-meta
+ * and its review queue) into the config-root recycle bin and unregister it. */
+export declare function deleteKb(id: string): Promise<{
+    trashPath: string;
+}>;
+/** Restore one knowledge base from the recycle bin (id/path conflict-guarded). */
+export declare function restoreKb(id: string): Promise<{
+    kb: KbConfig;
+}>;
+/** Permanently remove one knowledge base from the recycle bin. */
+export declare function purgeKb(id: string): Promise<{
+    purged: boolean;
+}>;
+/** Combined recycle-bin listing: current KB's deleted cards + all deleted KBs. */
+export declare function listTrash(kbId?: string): Promise<{
+    cards: TrashCardEntry[];
+    kbs: TrashKbEntry[];
+}>;
 /** Add one review item (agent-flagged during ingest, or manual). */
 export declare function addReview(kb: KbConfig, input: {
     kind: ReviewKind;

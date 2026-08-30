@@ -1,6 +1,6 @@
 # @amberyang1106/dsh-knowledge-cards
 
-DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡片」入口，中央列展示知识库面板（卡片墙 / 资料 / 代码 / 看板 / 审核 / 知识库管理），宿主经 `/api/dsh-knowledge/*` 路由读写本地知识库，并提供 14 个 `wiki_*` agent 工具，让任意项目会话把领域知识作为上下文拉进来。
+DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡片」入口，中央列展示知识库面板（卡片墙 / 资料 / 代码 / 看板 / 审核 / 知识库管理 / 回收站），宿主经 `/api/dsh-knowledge/*` 路由读写本地知识库，并提供 21 个 `wiki_*` agent 工具，让任意项目会话把领域知识作为上下文拉进来。
 
 基于 [Karpathy 的 LLM Wiki 方法论](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 与 [nashsu/llm_wiki](https://github.com/nashsu/llm_wiki) 的实现范式：**原始资料（只读）→ LLM 维护的知识卡片 → schema/purpose 规则**。
 
@@ -18,8 +18,8 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 
 ## 功能
 
-- **面板 6 个 tab**：
-  - 卡片墙：按类型分组浏览 / 搜索 / 详情（frontmatter + Markdown + `[[wikilink]]` 交叉引用）,同时可以点击右上角进行知识库的切换
+- **面板 7 个 tab**：
+  - 卡片墙：按类型分组浏览 / 搜索 / 详情（frontmatter + Markdown + `[[wikilink]]` 交叉引用）,同时可以点击右上角进行知识库的切换；**「+ 新建卡片」直接手写创建卡片**（type/title/摘要/标签/关联/来源/正文全字段，无需走 agent）
     <img width="2964" height="774" alt="image" src="https://github.com/user-attachments/assets/5219cb90-ba66-413a-a139-543824891faa" />
 
   - 资料：`raw/sources/` 资料源状态（SHA256 增量缓存），一键把待摄入清单交给 agent
@@ -28,17 +28,18 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
   - 代码：`code/` 目录代码文件浏览 / 上传 / 读取 / 删除（原样保存，不经 LLM）
     <img width="2954" height="720" alt="image" src="https://github.com/user-attachments/assets/e9385757-f37a-402a-8d74-a063a3b8cc52" />
 
-  - 看板：`log.md` 时序操作记录（摄入 / 提交 / 编辑 / 审核）
+  - 看板：`log.md` 时序操作记录（摄入 / 提交 / 编辑 / 创建 / 删除 / 恢复）
     <img width="2944" height="690" alt="image" src="https://github.com/user-attachments/assets/5a6e6231-7041-450a-b235-34898b12deff" />
 
   - 审核：llm_wiki 异步人机协作队列（矛盾 / 重复 / 缺页 / 建议，含预定义操作与预生成搜索查询）
     <img width="2970" height="680" alt="image" src="https://github.com/user-attachments/assets/185f0573-487c-476e-b25e-4d135b3436e9" />
 
-  - 知识库管理：多知识库创建 / 切换
+  - 知识库管理：多知识库创建 / 切换 / **删除**（软删除入回收站）
     <img width="2954" height="1128" alt="image" src="https://github.com/user-attachments/assets/cf2220d0-dcd9-417c-be32-1bdb38839862" />
 
-- **宿主 `/api/dsh-knowledge/*` 路由**：kbs（列表/创建）、cards（列表/搜索）、card（详情）、commit、card/edit、log、sources、lint、import-cards、rebuild、code（列表/上传）、code/content、code/delete、reviews、reviews/resolve、audit、audit-prompt
-- **14 个 agent 工具**（任意项目会话可用，跨项目上下文注入）：`wiki_kbs` / `wiki_create_kb` / `wiki_search` / `wiki_read` / `wiki_edit_card` / `wiki_ingest` / `wiki_commit` / `wiki_import_cards` / `wiki_lint` / `wiki_audit` / `wiki_review_submit` / `wiki_reviews` / `wiki_code_list` / `wiki_code_read`
+  - 回收站：已删除的卡片与知识库，逐项**恢复**或**彻底删除**（删除是软删除——卡片在 `<kb>/.trash/`、知识库在 `~/.dsh/knowledge-cards/.trash/`，可随时恢复；彻底删除才物理清除）
+- **宿主 `/api/dsh-knowledge/*` 路由**：kbs（列表/创建）、cards（列表/搜索）、card（详情）、commit、card/edit、**card/create（手动建卡）**、**card/delete · card/restore · card/purge（卡片回收站）**、**kbs/delete · kbs/restore · kbs/purge（知识库回收站）**、**trash（回收站列表）**、log、sources、lint、import-cards、rebuild、code（列表/上传）、code/content、code/delete、reviews、reviews/resolve、audit、audit-prompt
+- **21 个 agent 工具**（任意项目会话可用，跨项目上下文注入）：`wiki_kbs` / `wiki_create_kb` / `wiki_search` / `wiki_read` / `wiki_edit_card` / `wiki_ingest` / `wiki_commit` / `wiki_import_cards` / `wiki_lint` / `wiki_audit` / `wiki_review_submit` / `wiki_reviews` / `wiki_code_list` / `wiki_code_read` / **`wiki_card_delete` / `wiki_card_restore` / `wiki_card_purge`** / **`wiki_kb_delete` / `wiki_kb_restore` / `wiki_kb_purge`** / **`wiki_trash_list`**（删除均为软删除入回收站，`purge` 才是物理删除、仅在用户明确要求时使用）
 
 ## 知识库布局（每库）
 
@@ -63,10 +64,10 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 > ⚠️ **仓库为私有**：安装前需先被授予该仓库的读权限（维护者将你加为 GitHub 协作者，或你已在组织的允许列表内）。首次安装时 git 会弹出 GitHub 登录，用你自己的账号登录即可；未授权时会报 `Authentication failed` / `could not read Username`。
 
 ```sh
-dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.1.0
+dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.2.0
 ```
 
-> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.1.0` 换成新 tag。
+> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.2.0` 换成新 tag。
 
 重启 `dsh web`，侧边栏出现「知识卡片」。你的知识库数据在 `~/.dsh/knowledge-cards/`，安装/升级/卸载插件均不影响。
 
@@ -130,7 +131,6 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 以下能力当前**尚未实现**，供使用者了解功能边界：
 
 - **审核队列的 agent 代为处理**：当前 `reviews/resolve` 仅面板「审核」tab 可用（预定义操作 + 预生成搜索查询），agent 只能 `wiki_review_submit` 提交、`wiki_reviews` 查看，不能直接 resolve / 跳过——规划中让 agent 能按用户指示代为处理审核项。
-- **卡片与知识库的删除 / 归档**：当前没有删除接口（卡片只能 `wiki_edit_card` 覆盖、知识库只能创建）；`wiki_lint` 报告的孤立页 / 重复卡片需人工清理。删除 + 回收站规划中。
 - **资料源在线上传**：当前 `raw/sources/` 需手动放入文件（面板「代码」tab 已支持上传而「资料」tab 未支持）；规划中支持资料拖拽上传 + 自动入待摄入清单。
 - **知识库导出 / 备份**：当前无导出接口（备份 = 直接拷贝 `~/.dsh/knowledge-cards/` 目录）；规划中提供 JSON / Markdown 导出与一键备份。
 - **知识图谱 / 卡片关系可视化**：`[[wikilink]]` 交叉引用数据已具备，但无可视化；规划中做卡片关系图谱。

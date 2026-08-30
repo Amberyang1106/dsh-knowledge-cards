@@ -41,8 +41,8 @@ describe('host apply (boot path)', () => {
     const { ctx, routes, tools, sections } = makeCtx()
     expect(() => apply(ctx as never)).not.toThrow()
 
-    // 17 exact routes under /api/dsh-knowledge (one handler per path, method-dispatched).
-    expect(routes).toHaveLength(17)
+    // 25 exact routes under /api/dsh-knowledge (one handler per path, method-dispatched).
+    expect(routes).toHaveLength(25)
     const paths = routes.map((route) => (route as { path?: string }).path)
     expect(paths).toEqual([
       '/api/dsh-knowledge/kbs',
@@ -62,15 +62,23 @@ describe('host apply (boot path)', () => {
       '/api/dsh-knowledge/reviews/resolve',
       '/api/dsh-knowledge/audit',
       '/api/dsh-knowledge/audit-prompt',
+      '/api/dsh-knowledge/card/create',
+      '/api/dsh-knowledge/card/delete',
+      '/api/dsh-knowledge/card/restore',
+      '/api/dsh-knowledge/card/purge',
+      '/api/dsh-knowledge/kbs/delete',
+      '/api/dsh-knowledge/kbs/restore',
+      '/api/dsh-knowledge/kbs/purge',
+      '/api/dsh-knowledge/trash',
     ])
     for (const route of routes) {
       expect((route as { kind?: string }).kind).toBe('exact')
     }
 
-    // 14 agent tools.
-    expect(tools).toHaveLength(14)
+    // 21 agent tools.
+    expect(tools).toHaveLength(21)
     const names = tools.map((tool) => (tool as { name?: string }).name).sort()
-    expect(names).toEqual(['wiki_audit', 'wiki_code_list', 'wiki_code_read', 'wiki_commit', 'wiki_create_kb', 'wiki_edit_card', 'wiki_import_cards', 'wiki_ingest', 'wiki_kbs', 'wiki_lint', 'wiki_read', 'wiki_review_submit', 'wiki_reviews', 'wiki_search'])
+    expect(names).toEqual(['wiki_audit', 'wiki_card_delete', 'wiki_card_purge', 'wiki_card_restore', 'wiki_code_list', 'wiki_code_read', 'wiki_commit', 'wiki_create_kb', 'wiki_edit_card', 'wiki_import_cards', 'wiki_ingest', 'wiki_kb_delete', 'wiki_kb_purge', 'wiki_kb_restore', 'wiki_kbs', 'wiki_lint', 'wiki_read', 'wiki_review_submit', 'wiki_reviews', 'wiki_search', 'wiki_trash_list'])
 
     // One system-prompt announcement.
     expect(sections).toHaveLength(1)

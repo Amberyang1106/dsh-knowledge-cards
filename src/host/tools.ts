@@ -26,8 +26,9 @@ import type { PageInput } from '../core/types.ts'
 import { lintKb, renderLintReport } from './lint.ts'
 import { auditKb } from './audit.ts'
 import {
-  addReview, commitPages, createKb, editCard, getKb, importCards, kbSummary, listCards, listCodeFiles, listKbSummaries,
-  listReviews, listSources, pendingSources, readCard, readCodeFile,
+  addReview, commitPages, createKb, deleteCard, deleteKb, editCard, getKb, importCards, kbSummary, listCards,
+  listCodeFiles, listKbSummaries, listReviews, listSources, listTrash, pendingSources, purgeCard, purgeKb,
+  readCard, readCodeFile, restoreCard, restoreKb,
 } from './store.ts'
 
 /** One text content block (the only render shape these tools emit). */
@@ -843,6 +844,270 @@ export function wikiAuditTool() {
         skippedExisting: result.skippedExisting,
         summary: result.summary,
         deepAuditPrompt: result.deepAuditPrompt,
+      }
+    },
+  })
+}
+
+export function wikiCardDeleteTool() {
+  return defineTool({
+    name: 'wiki_card_delete',
+    description: '把一张知识卡片移入回收站（软删除，非物理删除）：从 wiki/ 移到 <kb>/.trash/cards/，自动重建 index/log/overview，卡片从搜索/lint/索引即刻消失。可在面板「回收站」标签或 wiki_card_restore 恢复。删除会使其 [[wikilink]] 变为断链（wiki_lint 会报告）。Triggers: 删卡片、删除卡片、移除卡片。',
+    parameters: {
+      kb: { type: 'string', description: '知识库 id（省略用默认库）。' },
+      slug: { type: 'string', required: true, description: '要删除的卡片 slug（wiki_search 查看）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kb: { type: 'string', required: true },
+          slug: { type: 'string', required: true },
+          trashPath: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value: { kb: string; slug: string; trashPath: string }) => {
+        return text(`卡片「${value.slug}」已移入回收站（${value.trashPath}）。可随时用 wiki_card_restore 恢复。`)
+      },
+    },
+    async execute(args: { kb?: string; slug: string }) {
+      const resolved = await resolveKb(args.kb)
+      if (resolved === null) throw new Error('尚无知识库。先 wiki_create_kb 建库。')
+      const kb = await getKb(resolved.id)
+      if (kb === null) throw new Error(`unknown knowledge base: ${resolved.id}`)
+      const result = await deleteCard(kb, args.slug)
+      return { kb: resolved.id, slug: args.slug, trashPath: result.trashPath }
+    },
+  })
+}
+
+export function wikiCardRestoreTool() {
+  return defineTool({
+    name: 'wiki_card_restore',
+    description: '把回收站中的一张卡片恢复到 wiki/ 原位置（同 slug 卡片被重建时会报恢复冲突）。恢复后 index/overview 重建、记 restore 日志、[[wikilink]] 恢复可解析。Triggers: 恢复卡片、还原卡片、从回收站恢复。',
+    parameters: {
+      kb: { type: 'string', description: '知识库 id（省略用默认库）。' },
+      slug: { type: 'string', required: true, description: '回收站中的卡片 slug（wiki_trash_list 查看）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kb: { type: 'string', required: true },
+          slug: { type: 'string', required: true },
+          path: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value: { kb: string; slug: string; path: string }) => {
+        return text(`卡片「${value.slug}」已恢复到 wiki/${value.path}。`)
+      },
+    },
+    async execute(args: { kb?: string; slug: string }) {
+      const resolved = await resolveKb(args.kb)
+      if (resolved === null) throw new Error('尚无知识库。先 wiki_create_kb 建库。')
+      const kb = await getKb(resolved.id)
+      if (kb === null) throw new Error(`unknown knowledge base: ${resolved.id}`)
+      const result = await restoreCard(kb, args.slug)
+      return { kb: resolved.id, slug: args.slug, path: result.path }
+    },
+  })
+}
+
+export function wikiCardPurgeTool() {
+  return defineTool({
+    name: 'wiki_card_purge',
+    description: '从回收站彻底删除一张卡片（物理删除，不可恢复！）。仅在用户明确要求永久删除时使用；一般用 wiki_card_restore 恢复即可。Triggers: 彻底删除卡片、永久删除卡片、清空回收站。',
+    parameters: {
+      kb: { type: 'string', description: '知识库 id（省略用默认库）。' },
+      slug: { type: 'string', required: true, description: '回收站中的卡片 slug（wiki_trash_list 查看）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kb: { type: 'string', required: true },
+          slug: { type: 'string', required: true },
+          purged: { type: 'boolean', required: true },
+        },
+      },
+      render: (_args, value: { kb: string; slug: string; purged: boolean }) => {
+        return text(`卡片「${value.slug}」已从回收站彻底删除（不可恢复）。`)
+      },
+    },
+    async execute(args: { kb?: string; slug: string }) {
+      const resolved = await resolveKb(args.kb)
+      if (resolved === null) throw new Error('尚无知识库。先 wiki_create_kb 建库。')
+      const kb = await getKb(resolved.id)
+      if (kb === null) throw new Error(`unknown knowledge base: ${resolved.id}`)
+      await purgeCard(kb, args.slug)
+      return { kb: resolved.id, slug: args.slug, purged: true }
+    },
+  })
+}
+
+export function wikiKbDeleteTool() {
+  return defineTool({
+    name: 'wiki_kb_delete',
+    description: '把整个知识库移入回收站（软删除）：整个目录（含 raw/wiki/code + 审核队列）移到 <configRoot>/.trash/kbs/<id>/，并从知识库列表移除。kb 必填（不做默认库推断，防止误删）。可在面板「回收站」标签或 wiki_kb_restore 恢复。Triggers: 删知识库、删除知识库、移除知识库。',
+    parameters: {
+      kb: { type: 'string', required: true, description: '要删除的知识库 id（wiki_kbs 查看）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kb: { type: 'string', required: true },
+          trashPath: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value: { kb: string; trashPath: string }) => {
+        return text(`知识库「${value.kb}」已移入回收站（${value.trashPath}，含其审核队列）。可随时用 wiki_kb_restore 恢复。`)
+      },
+    },
+    async execute(args: { kb: string }) {
+      if (typeof args.kb !== 'string' || args.kb.trim() === '') throw new Error('kb 必填：要删除的知识库 id。')
+      const result = await deleteKb(args.kb.trim())
+      return { kb: args.kb.trim(), trashPath: result.trashPath }
+    },
+  })
+}
+
+export function wikiKbRestoreTool() {
+  return defineTool({
+    name: 'wiki_kb_restore',
+    description: '把回收站中的一个知识库恢复到原路径并重新登记（id 已被占用或原路径已存在时报恢复冲突）。其审核队列随库一起回来。Triggers: 恢复知识库、还原知识库。',
+    parameters: {
+      kb: { type: 'string', required: true, description: '回收站中的知识库 id（wiki_trash_list 查看）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kb: { type: 'string', required: true },
+          name: { type: 'string', required: true },
+          path: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value: { kb: string; name: string; path: string }) => {
+        return text(`知识库「${value.name}」(id=${value.kb}) 已恢复 @ ${value.path}。`)
+      },
+    },
+    async execute(args: { kb: string }) {
+      if (typeof args.kb !== 'string' || args.kb.trim() === '') throw new Error('kb 必填：回收站中的知识库 id。')
+      const result = await restoreKb(args.kb.trim())
+      return { kb: result.kb.id, name: result.kb.name, path: result.kb.path }
+    },
+  })
+}
+
+export function wikiKbPurgeTool() {
+  return defineTool({
+    name: 'wiki_kb_purge',
+    description: '从回收站彻底删除一个知识库（物理删除，不可恢复！）。仅在用户明确要求永久删除时使用；一般用 wiki_kb_restore 恢复即可。Triggers: 彻底删除知识库、永久删除知识库。',
+    parameters: {
+      kb: { type: 'string', required: true, description: '回收站中的知识库 id（wiki_trash_list 查看）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kb: { type: 'string', required: true },
+          purged: { type: 'boolean', required: true },
+        },
+      },
+      render: (_args, value: { kb: string; purged: boolean }) => {
+        return text(`知识库「${value.kb}」已从回收站彻底删除（不可恢复）。`)
+      },
+    },
+    async execute(args: { kb: string }) {
+      if (typeof args.kb !== 'string' || args.kb.trim() === '') throw new Error('kb 必填：回收站中的知识库 id。')
+      await purgeKb(args.kb.trim())
+      return { kb: args.kb.trim(), purged: true }
+    },
+  })
+}
+
+export function wikiTrashListTool() {
+  return defineTool({
+    name: 'wiki_trash_list',
+    description: '列出回收站内容：指定知识库（kb 省略则全部知识库）的已删除卡片 + 全部已删除的知识库（含删除时间与原路径）。供 wiki_card_restore / wiki_kb_restore 恢复或 purge 彻底删除。Triggers: 回收站、已删除的卡片、恢复卡片。',
+    parameters: {
+      kb: { type: 'string', description: '知识库 id（省略则列出所有知识库的已删卡片）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          cards: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                slug: { type: 'string', required: true },
+                originalPath: { type: 'string', required: true },
+                type: { type: 'string', required: true },
+                title: { type: 'string', required: true },
+                deletedAt: { type: 'integer', required: true },
+              },
+            },
+          },
+          kbs: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                id: { type: 'string', required: true },
+                name: { type: 'string', required: true },
+                originalPath: { type: 'string', required: true },
+                deletedAt: { type: 'integer', required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value: { cards: Array<{ slug: string; originalPath: string; type: string; title: string; deletedAt: number }>; kbs: Array<{ id: string; name: string; originalPath: string; deletedAt: number }> }) => {
+        const lines: string[] = []
+        if (value.kbs.length > 0) {
+          lines.push(`回收站中已删除的知识库 ${value.kbs.length} 个:`)
+          for (const kb of value.kbs) lines.push(`- [kb] ${kb.id} | ${kb.name} | 原路径: ${kb.originalPath} | 删除于 ${new Date(kb.deletedAt).toLocaleString()}`)
+        }
+        if (value.cards.length > 0) {
+          lines.push(`回收站中已删除的卡片 ${value.cards.length} 张:`)
+          for (const card of value.cards) lines.push(`- [${card.type}] ${card.slug} — ${card.title} | 原路径: ${card.originalPath} | 删除于 ${new Date(card.deletedAt).toLocaleString()}`)
+        }
+        if (lines.length === 0) lines.push('回收站为空。')
+        lines.push('恢复用 wiki_card_restore / wiki_kb_restore；彻底删除用 wiki_card_purge / wiki_kb_purge（不可恢复）。')
+        return text(lines.join('\n'))
+      },
+    },
+    async execute(args: { kb?: string }) {
+      const kbId = args.kb !== undefined && args.kb !== '' ? args.kb : undefined
+      const result = await listTrash(kbId)
+      return {
+        cards: result.cards.map((card) => ({
+          slug: card.slug,
+          originalPath: card.originalPath,
+          type: card.type,
+          title: card.title,
+          deletedAt: Math.round(card.deletedAt),
+        })),
+        kbs: result.kbs.map((kb) => ({
+          id: kb.id,
+          name: kb.name,
+          originalPath: kb.originalPath,
+          deletedAt: Math.round(kb.deletedAt),
+        })),
       }
     },
   })

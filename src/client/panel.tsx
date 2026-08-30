@@ -1,8 +1,10 @@
 /**
  * KnowledgeCards panel: the center-column view toggled by the sidebar entry.
- * Three tabs — 卡片 (card wall + search + detail), 资料 (raw sources with
- * ingest status + copy-prompt for the agent), 知识库 (multi-KB management).
- * All data rides the host /api/dsh-knowledge/* routes.
+ * Tabs — 卡片 (card wall + search + detail + manual create), 资料 (raw sources
+ * with ingest status + copy-prompt for the agent), 代码 (code files), 看板
+ * (activity log), 审核 (review queue), 知识库 (multi-KB management), 回收站
+ * (deleted cards/KBs, restore or purge). All data rides the host
+ * /api/dsh-knowledge/* routes.
  * @module dsh-knowledge-cards/client/panel
  */
 
@@ -126,6 +128,105 @@ function CardsTab({
     return () => { if (timerRef.current !== undefined) window.clearTimeout(timerRef.current) }
   }, [search, load, typeFilter])
 
+  // ---- manual create form (手写建卡) ----
+  const [creating, setCreating] = useState(false)
+  const [draftType, setDraftType] = useState('concept')
+  const [draftTitle, setDraftTitle] = useState('')
+  const [draftDesc, setDraftDesc] = useState('')
+  const [draftTags, setDraftTags] = useState('')
+  const [draftRelated, setDraftRelated] = useState('')
+  const [draftSources, setDraftSources] = useState('')
+  const [draftBody, setDraftBody] = useState('')
+  const [savingDraft, setSavingDraft] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [createdNote, setCreatedNote] = useState<string | null>(null)
+
+  const openCreate = (): void => {
+    setDraftType('concept')
+    setDraftTitle('')
+    setDraftDesc('')
+    setDraftTags('')
+    setDraftRelated('')
+    setDraftSources('')
+    setDraftBody('')
+    setCreateError(null)
+    setCreatedNote(null)
+    setCreating(true)
+  }
+
+  const saveCreate = async (): Promise<void> => {
+    if (draftTitle.trim() === '') return
+    setSavingDraft(true)
+    setCreateError(null)
+    try {
+      const data = await api<{ result: { card: CardMeta } }>('/api/dsh-knowledge/card/create', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kb: kbId,
+          type: draftType,
+          title: draftTitle.trim(),
+          description: draftDesc.trim(),
+          tags: draftTags.split(',').map((tag) => tag.trim()).filter((tag) => tag !== ''),
+          related: draftRelated.split(',').map((item) => item.trim()).filter((item) => item !== ''),
+          sources: draftSources.split(',').map((item) => item.trim()).filter((item) => item !== ''),
+          body: draftBody,
+        }),
+      })
+      setCreating(false)
+      setCreatedNote(t(undefined, 'create.created', { title: data.result.card.title }))
+      window.setTimeout(() => setCreatedNote(null), 4000)
+      load(search, typeFilter)
+    } catch (err) {
+      setCreateError(String((err as Error).message ?? err))
+    } finally {
+      setSavingDraft(false)
+    }
+  }
+
+  if (creating) {
+    return (
+      <div>
+        <div className={css.detailHeader}>
+          <button className={css.back} onClick={() => setCreating(false)}>{t(undefined, 'card.cancel')}</button>
+        </div>
+        <h2 className={css.detailTitle}>+ {t(undefined, 'create.title')}</h2>
+        {createError !== null && <div className={css.error}>{createError}</div>}
+        <div className={css.editForm}>
+          <label className={css.editLabel}>{t(undefined, 'create.type')}
+            <select className={css.select} value={draftType} onChange={(event) => setDraftType(event.target.value)}>
+              {['concept', 'entity', 'source', 'query', 'comparison', 'synthesis'].map((type) => <option key={type} value={type}>{type}</option>)}
+            </select>
+          </label>
+          <label className={css.editLabel}>{t(undefined, 'card.title')}
+            <input className={css.input} value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} />
+          </label>
+          <label className={css.editLabel}>{t(undefined, 'card.desc')}
+            <input className={css.input} value={draftDesc} onChange={(event) => setDraftDesc(event.target.value)} />
+          </label>
+          <label className={css.editLabel}>{t(undefined, 'form.tags')}
+            <input className={css.input} value={draftTags} placeholder="财务, allocation" onChange={(event) => setDraftTags(event.target.value)} />
+          </label>
+          <label className={css.editLabel}>{t(undefined, 'form.related')}
+            <input className={css.input} value={draftRelated} placeholder="利润中心, 成本分摊" onChange={(event) => setDraftRelated(event.target.value)} />
+          </label>
+          <label className={css.editLabel}>{t(undefined, 'form.sources')}
+            <input className={css.input} value={draftSources} placeholder="policy-2024.pdf" onChange={(event) => setDraftSources(event.target.value)} />
+          </label>
+          <label className={css.editLabel}>{t(undefined, 'card.body')}
+            <textarea className={css.editorTextarea} rows={14} value={draftBody} placeholder="Markdown，[[wikilink]] 互链" onChange={(event) => setDraftBody(event.target.value)} />
+          </label>
+          <div className={css.editActions}>
+            <button className={css.run} disabled={savingDraft || draftTitle.trim() === ''} onClick={() => void saveCreate()}>
+              {savingDraft ? '…' : t(undefined, 'create.save')}
+            </button>
+            <button className={css.runSmall} onClick={() => setCreating(false)}>{t(undefined, 'card.cancel')}</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div>
       <div className={css.controls}>
@@ -135,6 +236,7 @@ function CardsTab({
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
+        <button className={css.run} onClick={openCreate}>+ {t(undefined, 'cards.create')}</button>
       </div>
       <div className={css.chips}>
         {TYPE_FILTERS.map((filter) => (
@@ -149,6 +251,7 @@ function CardsTab({
         <span className={css.hint}>{t(undefined, 'cards.total', { total })}</span>
       </div>
       {error !== null && <div className={css.error}>{t(undefined, 'error.load', { message: error })}</div>}
+      {createdNote !== null && <div className={css.lintResult}>{createdNote}</div>}
       {!loading && cards.length === 0 && error === null && <div className={css.empty}>{t(undefined, 'cards.empty')}</div>}
       <div className={css.grid}>
         {cards.map((card) => (
@@ -173,11 +276,12 @@ function CardsTab({
 // card detail
 // ---------------------------------------------------------------------------
 
-function CardDetail({ kbId, slug, onBack, onOpenCard }: {
+function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
   kbId: string
   slug: string
   onBack: () => void
   onOpenCard: (card: CardMeta) => void
+  onDeleted: () => void
 }): ReactElement {
   const [card, setCard] = useState<Card | null>(null)
   const [editing, setEditing] = useState(false)
@@ -188,6 +292,7 @@ function CardDetail({ kbId, slug, onBack, onOpenCard }: {
   const [saving, setSaving] = useState(false)
   const [savedNote, setSavedNote] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     setCard(null)
@@ -242,6 +347,24 @@ function CardDetail({ kbId, slug, onBack, onOpenCard }: {
 
   const openFromSlug = (target: string): void => onOpenCard({ slug: target } as CardMeta)
 
+  const removeCard = async (): Promise<void> => {
+    if (card === null) return
+    if (!window.confirm(t(undefined, 'card.delete.confirm', { title: card.title }))) return
+    setDeleting(true)
+    try {
+      await api('/api/dsh-knowledge/card/delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kbId, slug: card.slug }),
+      })
+      onDeleted()
+    } catch (err) {
+      setError(String((err as Error).message ?? err))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   if (editing) {
     return (
       <div>
@@ -279,6 +402,7 @@ function CardDetail({ kbId, slug, onBack, onOpenCard }: {
         <button className={css.back} onClick={onBack}>{t(undefined, 'card.back')}</button>
         <div className={css.headerActions}>
           <button className={css.runSmall} onClick={startEdit}>{t(undefined, 'edit.button')}</button>
+          <button className={css.dangerSmall} disabled={deleting} onClick={() => void removeCard()}>🗑 {t(undefined, 'card.delete')}</button>
           <button className={css.close} onClick={onBack}>✕</button>
         </div>
       </div>
@@ -394,17 +518,37 @@ function SourcesTab({ kbId, kbName }: { kbId: string; kbName: string }): ReactEl
 // knowledge bases tab
 // ---------------------------------------------------------------------------
 
-function KbsTab({ kbs, activeId, onSelect, onCreated }: {
+function KbsTab({ kbs, activeId, onSelect, onCreated, onDeleted }: {
   kbs: KbSummary[]
   activeId: string
   onSelect: (id: string) => void
   onCreated: () => void
+  onDeleted: (id: string) => void
 }): ReactElement {
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [description, setDescription] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  const remove = async (kb: KbSummary): Promise<void> => {
+    if (!window.confirm(t(undefined, 'kbs.delete.confirm', { name: kb.name }))) return
+    setDeletingId(kb.id)
+    setError(null)
+    try {
+      await api('/api/dsh-knowledge/kbs/delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kb.id }),
+      })
+      onDeleted(kb.id)
+    } catch (err) {
+      setError(String((err as Error).message ?? err))
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   const create = async (): Promise<void> => {
     if (name.trim() === '') return
@@ -434,7 +578,17 @@ function KbsTab({ kbs, activeId, onSelect, onCreated }: {
       {kbs.length === 0 && <div className={css.empty}>{t(undefined, 'kbs.empty')}</div>}
       {kbs.map((kb) => (
         <div key={kb.id} className={kb.id === activeId ? css.kbRowActive : css.kbRow} onClick={() => onSelect(kb.id)}>
-          <div className={css.kbName}>{kb.name}{kb.id === activeId && ' ✓'}</div>
+          <div className={css.kbRowTop}>
+            <span className={css.kbName}>{kb.name}{kb.id === activeId && ' ✓'}</span>
+            <button
+              className={css.dangerSmall}
+              disabled={deletingId === kb.id}
+              title={t(undefined, 'kbs.delete')}
+              onClick={(event) => { event.stopPropagation(); void remove(kb) }}
+            >
+              🗑 {t(undefined, 'kbs.delete')}
+            </button>
+          </div>
           <div className={css.kbMeta}>{t(undefined, 'kbs.stats', { total: kb.stats.total, sources: kb.stats.sourceCount })}</div>
           <div className={css.kbPath}>{kb.path}</div>
           {kb.description !== undefined && <div className={css.kbDesc}>{kb.description}</div>}
@@ -901,13 +1055,185 @@ function ReviewsTab({ kbId }: { kbId: string }): ReactElement {
 }
 
 // ---------------------------------------------------------------------------
+// recycle bin tab (回收站)
+// ---------------------------------------------------------------------------
+
+interface TrashCardFace {
+  slug: string
+  originalPath: string
+  type: string
+  title: string
+  deletedAt: number
+}
+
+interface TrashKbFace {
+  id: string
+  name: string
+  originalPath: string
+  deletedAt: number
+}
+
+function formatDate(timestamp: number): string {
+  return new Date(timestamp).toLocaleString()
+}
+
+function TrashTab({ kbId, onKbChanged }: {
+  kbId: string
+  /** Fired after a KB is restored/purged — refresh the KB list. */
+  onKbChanged: () => void
+}): ReactElement {
+  const [cards, setCards] = useState<TrashCardFace[]>([])
+  const [kbs, setKbs] = useState<TrashKbFace[]>([])
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+
+  const load = useCallback((): void => {
+    api<{ cards: TrashCardFace[]; kbs: TrashKbFace[] }>(`/api/dsh-knowledge/trash${query({ kb: kbId })}`)
+      .then((data) => { setCards(data.cards); setKbs(data.kbs); setError(null) })
+      .catch((err) => setError(String((err as Error).message ?? err)))
+  }, [kbId])
+
+  useEffect(() => { load() }, [load])
+
+  const flash = (message: string): void => {
+    setNote(message)
+    window.setTimeout(() => setNote(null), 2500)
+  }
+
+  const restoreCard = async (card: TrashCardFace): Promise<void> => {
+    setBusy(`c:${card.slug}`)
+    setError(null)
+    try {
+      await api('/api/dsh-knowledge/card/restore', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kbId, slug: card.slug }),
+      })
+      flash(t(undefined, 'trash.restored'))
+      load()
+    } catch (err) {
+      setError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const purgeCard = async (card: TrashCardFace): Promise<void> => {
+    if (!window.confirm(t(undefined, 'trash.purge.confirm', { title: card.title }))) return
+    setBusy(`c:${card.slug}`)
+    setError(null)
+    try {
+      await api('/api/dsh-knowledge/card/purge', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kbId, slug: card.slug }),
+      })
+      flash(t(undefined, 'trash.purged'))
+      load()
+    } catch (err) {
+      setError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const restoreKb = async (kb: TrashKbFace): Promise<void> => {
+    setBusy(`k:${kb.id}`)
+    setError(null)
+    try {
+      await api('/api/dsh-knowledge/kbs/restore', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kb.id }),
+      })
+      flash(t(undefined, 'trash.restored'))
+      load()
+      onKbChanged()
+    } catch (err) {
+      setError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const purgeKb = async (kb: TrashKbFace): Promise<void> => {
+    if (!window.confirm(t(undefined, 'trash.purge.confirm', { title: kb.name }))) return
+    setBusy(`k:${kb.id}`)
+    setError(null)
+    try {
+      await api('/api/dsh-knowledge/kbs/purge', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kb.id }),
+      })
+      flash(t(undefined, 'trash.purged'))
+      load()
+      onKbChanged()
+    } catch (err) {
+      setError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div>
+      <div className={css.controls}>
+        <span className={css.hint}>{t(undefined, 'trash.hint')}</span>
+        <button className={css.run} onClick={load}>{t(undefined, 'refresh')}</button>
+      </div>
+      {note !== null && <div className={css.lintResult}>{note}</div>}
+      {error !== null && <div className={css.error}>{t(undefined, 'error.load', { message: error })}</div>}
+      {kbs.length === 0 && cards.length === 0 && error === null && <div className={css.empty}>{t(undefined, 'trash.empty')}</div>}
+      {kbs.length > 0 && (
+        <>
+          <h3 className={css.sectionTitle}>📚 {t(undefined, 'trash.kbs')}（{kbs.length}）</h3>
+          {kbs.map((kb) => (
+            <div key={kb.id} className={css.trashItem}>
+              <div className={css.trashTop}>
+                <span className={css.trashTitle}>{kb.name}</span>
+                <span className={css.trashMeta}>{kb.id} · {t(undefined, 'trash.deletedAt')} {formatDate(kb.deletedAt)}</span>
+              </div>
+              <div className={css.trashMeta}>📁 {kb.originalPath}</div>
+              <div className={css.trashActions}>
+                <button className={css.runSmall} disabled={busy === `k:${kb.id}`} onClick={() => void restoreKb(kb)}>↩ {t(undefined, 'trash.restore')}</button>
+                <button className={css.dangerSmall} disabled={busy === `k:${kb.id}`} onClick={() => void purgeKb(kb)}>{t(undefined, 'trash.purge')}</button>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+      {cards.length > 0 && (
+        <>
+          <h3 className={css.sectionTitle}>🗂 {t(undefined, 'trash.cards')}（{cards.length}）</h3>
+          {cards.map((card) => (
+            <div key={card.slug} className={css.trashItem}>
+              <div className={css.trashTop}>
+                <span className={css.trashTitle}><TypeBadge type={card.type} /> {card.title}</span>
+                <span className={css.trashMeta}>{t(undefined, 'trash.deletedAt')} {formatDate(card.deletedAt)}</span>
+              </div>
+              <div className={css.trashMeta}>wiki/{card.originalPath}</div>
+              <div className={css.trashActions}>
+                <button className={css.runSmall} disabled={busy === `c:${card.slug}`} onClick={() => void restoreCard(card)}>↩ {t(undefined, 'trash.restore')}</button>
+                <button className={css.dangerSmall} disabled={busy === `c:${card.slug}`} onClick={() => void purgeCard(card)}>{t(undefined, 'trash.purge')}</button>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // panel root
 // ---------------------------------------------------------------------------
 
 export function KnowledgePanel({ controller }: { controller: PanelController }): ReactElement {
   const [kbs, setKbs] = useState<KbSummary[]>([])
   const [kbId, setKbId] = useState<string>('')
-  const [tab, setTab] = useState<'cards' | 'sources' | 'code' | 'board' | 'review' | 'kbs'>('cards')
+  const [tab, setTab] = useState<'cards' | 'sources' | 'code' | 'board' | 'review' | 'kbs' | 'trash'>('cards')
   const [selected, setSelected] = useState<CardMeta | null>(null)
   const [lintResult, setLintResult] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -932,6 +1258,17 @@ export function KnowledgePanel({ controller }: { controller: PanelController }):
     setKbId(id)
     window.localStorage.setItem(KB_STORAGE_KEY, id)
     setSelected(null)
+  }
+
+  /** After a KB is deleted: drop its local preference and fall back to the first remaining KB. */
+  const handleKbDeleted = (deletedId: string): void => {
+    if (kbId === deletedId) window.localStorage.removeItem(KB_STORAGE_KEY)
+    setKbId((current) => {
+      if (current !== deletedId) return current
+      const remaining = kbs.filter((kb) => kb.id !== deletedId)
+      return remaining.length > 0 ? remaining[0].id : ''
+    })
+    loadKbs()
   }
 
   const openCard = (card: CardMeta): void => setSelected(card)
@@ -972,7 +1309,7 @@ export function KnowledgePanel({ controller }: { controller: PanelController }):
       {error !== null && <div className={css.error}>{t(undefined, 'error.load', { message: error })}</div>}
       {lintResult !== null && <div className={css.lintResult}>{lintResult}</div>}
       {kbs.length === 0 ? (
-        <KbsTab kbs={kbs} activeId={kbId} onSelect={selectKb} onCreated={loadKbs} />
+        <KbsTab kbs={kbs} activeId={kbId} onSelect={selectKb} onCreated={loadKbs} onDeleted={handleKbDeleted} />
       ) : (
         <>
           <div className={css.tabs}>
@@ -982,19 +1319,21 @@ export function KnowledgePanel({ controller }: { controller: PanelController }):
             <button className={tab === 'board' ? css.tabActive : css.tab} onClick={() => setTab('board')}>{t(undefined, 'tab.board')}</button>
             <button className={tab === 'review' ? css.tabActive : css.tab} onClick={() => setTab('review')}>{t(undefined, 'tab.review')}</button>
             <button className={tab === 'kbs' ? css.tabActive : css.tab} onClick={() => setTab('kbs')}>{t(undefined, 'tab.kbs')}</button>
+            <button className={tab === 'trash' ? css.tabActive : css.tab} onClick={() => setTab('trash')}>{t(undefined, 'tab.trash')}</button>
             <span className={css.tabSpacer} />
             <button className={css.runSmall} onClick={() => void runLint()}>{t(undefined, 'lint.run')}</button>
           </div>
           {tab === 'cards' && (
             selected === null
               ? <CardsTab kbId={kbId} onOpenCard={openCard} />
-              : <CardDetail kbId={kbId} slug={selected.slug} onBack={closeCard} onOpenCard={openCard} />
+              : <CardDetail kbId={kbId} slug={selected.slug} onBack={closeCard} onOpenCard={openCard} onDeleted={closeCard} />
           )}
           {tab === 'sources' && <SourcesTab kbId={kbId} kbName={activeKb?.name ?? kbId} />}
           {tab === 'code' && <CodeTab kbId={kbId} />}
           {tab === 'board' && <LogBoard kbId={kbId} />}
           {tab === 'review' && <ReviewsTab kbId={kbId} />}
-          {tab === 'kbs' && <KbsTab kbs={kbs} activeId={kbId} onSelect={selectKb} onCreated={loadKbs} />}
+          {tab === 'kbs' && <KbsTab kbs={kbs} activeId={kbId} onSelect={selectKb} onCreated={loadKbs} onDeleted={handleKbDeleted} />}
+          {tab === 'trash' && <TrashTab kbId={kbId} onKbChanged={loadKbs} />}
         </>
       )}
     </div>

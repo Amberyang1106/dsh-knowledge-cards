@@ -23,7 +23,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { parseFrontmatter, serializePage, slugFromTitle } from '../core/frontmatter.ts'
 import { extractWikilinks } from '../core/search.ts'
-import type { Card, CardMeta, CommitResult, KbConfig, KbSummary, PageInput, ReviewItem, ReviewKind, SourceStatus } from '../core/types.ts'
+import type { Card, CardMeta, CommitResult, KbConfig, KbSummary, PageInput, ReviewItem, ReviewKind, SourceStatus, TrashCardEntry, TrashKbEntry } from '../core/types.ts'
 import { REVIEW_OPTIONS } from '../core/types.ts'
 import { TYPE_DIRS } from '../core/types.ts'
 
@@ -495,7 +495,7 @@ export async function commitPages(
   kb: KbConfig,
   pages: PageInput[],
   sourceFiles: string[],
-  options?: { logAction?: 'ingest' | 'import'; extraNotes?: string[] },
+  options?: { logAction?: 'ingest' | 'import' | 'create'; extraNotes?: string[] },
 ): Promise<CommitResult> {
   if (pages.length === 0) throw new Error('no pages to commit')
   const created: string[] = []
@@ -574,6 +574,19 @@ export async function commitPages(
   await rebuildOverview(kb)
 
   return { created, updated, indexUpdated: true, logEntry, overviewUpdated: true, cachedSources: cached }
+}
+
+/**
+ * Manually create one card from the panel form (the counterpart of the
+ * agent's /commit path). Same deterministic pipeline as commitPages — new
+ * page, frontmatter validation, index/log/overview maintenance — with a
+ * `create` log action so the 看板 can distinguish manual cards from ingest.
+ */
+export async function createCard(kb: KbConfig, input: PageInput): Promise<{ created: string[]; logEntry: string; card: Card }> {
+  const result = await commitPages(kb, [input], input.sources ?? [], { logAction: 'create' })
+  const card = await readCard(kb, input.title)
+  if (card === null) throw new Error(`卡片创建失败: ${input.title}`)
+  return { created: result.created, logEntry: result.logEntry, card }
 }
 
 // ---------------------------------------------------------------------------
@@ -922,6 +935,275 @@ export async function deleteCodeFile(kb: KbConfig, relPath: string): Promise<boo
   } catch {
     return false
   }
+}
+
+// ---------------------------------------------------------------------------
+// recycle bin (回收站): soft delete cards → <kb>/.trash/cards/<type>/ and
+// knowledge bases → <configRoot>/.trash/kbs/<id>/ (with trash-meta.json +
+// the KB's review queue). Both trash roots live OUTSIDE every scan path
+// (wiki/ for cards, kbs.json registry for KBs), so deleted items disappear
+// from list/search/lint/overview instantly and only come back via restore.
+// ---------------------------------------------------------------------------
+
+const TRASH_META_FILE = 'trash-meta.json'
+
+function cardTrashDir(kb: KbConfig): string {
+  return join(kb.path, '.trash', 'cards')
+}
+
+function kbTrashRoot(): string {
+  return join(configRoot(), '.trash', 'kbs')
+}
+
+/** Sanitize a card type into a safe trash subdirectory name. */
+function safeTrashTypeDir(type: string): string {
+  const dir = type.replace(/[^\w\u4e00-\u9fff-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '')
+  return dir === '' ? 'other' : dir
+}
+
+/**
+ * Move a path across filesystems if needed: fs.rename works within a volume;
+ * on EXDEV/EPERM (cross-device, e.g. a KB on another drive) fall back to a
+ * recursive copy + delete so trashing never fails on custom KB paths.
+ */
+async function movePath(src: string, dest: string): Promise<void> {
+  try {
+    await fs.rename(src, dest)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EXDEV' || code === 'EPERM') {
+      await fs.cp(src, dest, { recursive: true })
+      await fs.rm(src, { recursive: true, force: true })
+      return
+    }
+    throw error
+  }
+}
+
+// ---- card recycle bin ----
+
+/** List every soft-deleted card of one KB (parsed from trash files). */
+export async function listTrashedCards(kb: KbConfig): Promise<TrashCardEntry[]> {
+  const root = cardTrashDir(kb)
+  const files = await walkFiles(root)
+  const entries: TrashCardEntry[] = []
+  for (const file of files) {
+    if (!file.endsWith('.md')) continue
+    const full = join(root, file)
+    const raw = await readText(full)
+    if (raw === null) continue
+    const parsed = parseFrontmatter(raw)
+    const fm = parsed.frontmatter ?? {}
+    const type = String(fm.type ?? 'unknown')
+    const title = String(fm.title ?? basename(file, '.md'))
+    const stat = await fs.stat(full)
+    const typeDir = dirname(file)
+    entries.push({
+      slug: basename(file, '.md'),
+      originalPath: `${TYPE_DIRS[type] ?? typeDir}/${basename(file)}`,
+      type,
+      title,
+      description: fm.description !== undefined ? String(fm.description) : undefined,
+      trashPath: full,
+      deletedAt: stat.mtimeMs,
+    })
+  }
+  return entries.sort((a, b) => b.deletedAt - a.deletedAt)
+}
+
+/** Find one trashed card by slug (or normalized title). */
+async function findTrashedCard(kb: KbConfig, slug: string): Promise<TrashCardEntry | null> {
+  const target = slug.replace(/^wiki\//, '').replace(/\.md$/, '')
+  const entries = await listTrashedCards(kb)
+  return entries.find((entry) => entry.slug === target || slugFromTitle(entry.title) === target) ?? null
+}
+
+/** Soft-delete one card: move its file into the KB recycle bin, rebuild
+ * index/overview and append a `delete` log entry. */
+export async function deleteCard(kb: KbConfig, slug: string): Promise<{ trashPath: string }> {
+  const card = await readCard(kb, slug)
+  if (card === null) throw new Error(`卡片不存在: ${slug}`)
+  const trashPath = join(cardTrashDir(kb), safeTrashTypeDir(card.type), `${card.slug}.md`)
+  const source = join(wikiDir(kb), card.path)
+  await fs.mkdir(dirname(trashPath), { recursive: true })
+  await movePath(source, trashPath)
+  await rebuildIndex(kb)
+  await rebuildOverview(kb)
+  await appendLog(kb, `delete | ${card.title}`, [`类型: ${card.type}`, `原路径: ${card.path}`])
+  return { trashPath }
+}
+
+/** Restore one card from the recycle bin back to wiki/ (conflict-guarded). */
+export async function restoreCard(kb: KbConfig, slug: string): Promise<{ path: string }> {
+  const entry = await findTrashedCard(kb, slug)
+  if (entry === null) throw new Error(`回收站中没有该卡片: ${slug}`)
+  const target = join(wikiDir(kb), entry.originalPath)
+  if (await pathExists(target)) {
+    throw new Error(`恢复冲突: wiki/${entry.originalPath} 已存在（可能已重建同 slug 卡片）。请先彻底删除回收站中的旧条目，或手动处理。`)
+  }
+  await fs.mkdir(dirname(target), { recursive: true })
+  await movePath(entry.trashPath, target)
+  await rebuildIndex(kb)
+  await rebuildOverview(kb)
+  await appendLog(kb, `restore | ${entry.title}`, [`原路径: ${entry.originalPath}`])
+  return { path: entry.originalPath }
+}
+
+/** Permanently remove one card from the recycle bin (not recoverable). */
+export async function purgeCard(kb: KbConfig, slug: string): Promise<{ purged: boolean }> {
+  const entry = await findTrashedCard(kb, slug)
+  if (entry === null) throw new Error(`回收站中没有该卡片: ${slug}`)
+  await fs.rm(entry.trashPath, { force: true })
+  await appendLog(kb, `purge | ${entry.title}`, ['已从回收站彻底删除'])
+  return { purged: true }
+}
+
+// ---- knowledge-base recycle bin ----
+
+interface TrashKbMeta {
+  id: string
+  name: string
+  originalPath: string
+  description?: string
+  createdAt?: number
+  deletedAt?: number
+}
+
+async function readTrashMeta(trashDir: string): Promise<TrashKbMeta | null> {
+  const text = await readText(join(trashDir, TRASH_META_FILE))
+  if (text === null) return null
+  try {
+    const parsed = JSON.parse(text) as Partial<TrashKbMeta>
+    if (typeof parsed.id !== 'string' || parsed.id === '') return null
+    return {
+      id: parsed.id,
+      name: parsed.name ?? parsed.id,
+      originalPath: parsed.originalPath ?? '',
+      description: parsed.description,
+      createdAt: parsed.createdAt,
+      deletedAt: parsed.deletedAt,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** List every soft-deleted knowledge base in the config-root recycle bin. */
+export async function listTrashedKbs(): Promise<TrashKbEntry[]> {
+  const root = kbTrashRoot()
+  let dirs: string[]
+  try {
+    dirs = await fs.readdir(root)
+  } catch {
+    return []
+  }
+  const entries: TrashKbEntry[] = []
+  for (const dir of dirs) {
+    const trashDir = join(root, dir)
+    const meta = await readTrashMeta(trashDir)
+    let stat
+    try {
+      stat = await fs.stat(trashDir)
+    } catch {
+      continue
+    }
+    entries.push({
+      id: meta?.id ?? dir,
+      name: meta?.name ?? dir,
+      originalPath: meta?.originalPath ?? '',
+      description: meta?.description,
+      createdAt: meta?.createdAt,
+      deletedAt: meta?.deletedAt ?? stat.mtimeMs,
+      trashPath: trashDir,
+    })
+  }
+  return entries.sort((a, b) => b.deletedAt - a.deletedAt)
+}
+
+/** Locate a trashed KB by id (exact dir first, then meta scan for suffixed dirs). */
+async function findTrashedKb(id: string): Promise<string | null> {
+  const candidate = join(kbTrashRoot(), id)
+  if (await pathExists(candidate)) return candidate
+  const hit = (await listTrashedKbs()).find((entry) => entry.id === id)
+  return hit?.trashPath ?? null
+}
+
+/** Soft-delete one knowledge base: move its whole directory (with trash-meta
+ * and its review queue) into the config-root recycle bin and unregister it. */
+export async function deleteKb(id: string): Promise<{ trashPath: string }> {
+  const config = await loadConfig()
+  const kb = config.kbs.find((entry) => entry.id === id)
+  if (kb === undefined) throw new Error(`知识库不存在: ${id}`)
+  let trashDir = join(kbTrashRoot(), kb.id)
+  if (await pathExists(trashDir)) trashDir = join(kbTrashRoot(), `${kb.id}-${Date.now()}`)
+  await fs.mkdir(kbTrashRoot(), { recursive: true })
+  await movePath(kb.path, trashDir)
+  const meta: TrashKbMeta = {
+    id: kb.id,
+    name: kb.name,
+    originalPath: kb.path,
+    description: kb.description,
+    createdAt: kb.createdAt,
+    deletedAt: Date.now(),
+  }
+  await writeTextAtomic(join(trashDir, TRASH_META_FILE), JSON.stringify(meta, null, 2))
+  const reviewsSrc = reviewsFile(kb)
+  if (await pathExists(reviewsSrc)) {
+    await fs.mkdir(join(trashDir, 'reviews'), { recursive: true })
+    await movePath(reviewsSrc, join(trashDir, 'reviews', `${kb.id}.json`))
+  }
+  config.kbs = config.kbs.filter((entry) => entry.id !== id)
+  await saveConfig(config)
+  return { trashPath: trashDir }
+}
+
+/** Restore one knowledge base from the recycle bin (id/path conflict-guarded). */
+export async function restoreKb(id: string): Promise<{ kb: KbConfig }> {
+  const trashDir = await findTrashedKb(id)
+  if (trashDir === null) throw new Error(`回收站中没有该知识库: ${id}`)
+  const meta = await readTrashMeta(trashDir)
+  const config = await loadConfig()
+  if (config.kbs.some((kb) => kb.id === id)) throw new Error(`恢复冲突: 知识库 id "${id}" 已被占用`)
+  const target = meta !== null && meta.originalPath !== '' ? meta.originalPath : join(configRoot(), 'kbs', id)
+  if (await pathExists(target)) throw new Error(`恢复冲突: 原路径已存在: ${target}`)
+  await movePath(trashDir, target)
+  const reviewsBackup = join(target, 'reviews', `${id}.json`)
+  if (await pathExists(reviewsBackup)) {
+    await fs.mkdir(join(configRoot(), 'reviews'), { recursive: true })
+    await movePath(reviewsBackup, reviewsFile({ id } as KbConfig))
+    await fs.rm(join(target, 'reviews'), { recursive: true, force: true })
+  }
+  const kb: KbConfig = {
+    id: meta?.id ?? id,
+    name: meta?.name ?? id,
+    path: target,
+    description: meta?.description,
+    createdAt: meta?.createdAt ?? Date.now(),
+  }
+  config.kbs.push(kb)
+  await saveConfig(config)
+  return { kb }
+}
+
+/** Permanently remove one knowledge base from the recycle bin. */
+export async function purgeKb(id: string): Promise<{ purged: boolean }> {
+  const trashDir = await findTrashedKb(id)
+  if (trashDir === null) throw new Error(`回收站中没有该知识库: ${id}`)
+  await fs.rm(trashDir, { recursive: true, force: true })
+  return { purged: true }
+}
+
+/** Combined recycle-bin listing: current KB's deleted cards + all deleted KBs. */
+export async function listTrash(kbId?: string): Promise<{ cards: TrashCardEntry[]; kbs: TrashKbEntry[] }> {
+  const kbs = await listTrashedKbs()
+  const cards: TrashCardEntry[] = []
+  if (kbId !== undefined && kbId !== '') {
+    const kb = await getKb(kbId)
+    if (kb !== null) cards.push(...(await listTrashedCards(kb)))
+  } else {
+    for (const kb of await listKbs()) cards.push(...(await listTrashedCards(kb)))
+  }
+  return { cards, kbs }
 }
 
 // ---------------------------------------------------------------------------

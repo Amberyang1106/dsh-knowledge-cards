@@ -31,4 +31,11 @@ export declare function wikiEditCardTool(): import("@deepseek-ai/dsh-tools").Too
 export declare function wikiReviewSubmitTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
 export declare function wikiReviewsTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
 export declare function wikiAuditTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
+export declare function wikiCardDeleteTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
+export declare function wikiCardRestoreTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
+export declare function wikiCardPurgeTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
+export declare function wikiKbDeleteTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
+export declare function wikiKbRestoreTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
+export declare function wikiKbPurgeTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
+export declare function wikiTrashListTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
 //# sourceMappingURL=tools.d.ts.map
