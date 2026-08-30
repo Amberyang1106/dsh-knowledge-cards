@@ -118,10 +118,11 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 
 1. 改 `package.json` 的 `version`（如 0.1.0 → 0.2.0，与 tag 对齐）
 2. 更新 README（功能变化、Roadmap 里已完成项勾掉）
-3. `pnpm build` 确保 `lib/` 同步 → `git add -A && git commit`
-4. `git tag v0.2.0 && git push && git push --tags`
-5. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.2.0` → 重启验证 → 再切回 link: 开发
-6. 通知用户把安装命令的 tag 换成 `#v0.2.0` 重装
+3. **同步本地 dsh-wiki 工作区 README**（`C:\Users\yangtt16\OneDrive - Lenovo\AI Test\Finance KM\dsh-wiki\README.md`）：功能特性 / 路由数 / 工具数 / 面板 tab / 测试数 / Changelog / 后续计划，与本仓库 README、CHANGELOG.md 保持口径一致
+4. `pnpm build` 确保 `lib/` 同步 → `git add -A && git commit`
+5. `git tag v0.2.0 && git push && git push --tags`
+6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.2.0` → 重启验证 → 再切回 link: 开发
+7. 更新 GitHub Release（`gh release create v0.2.0 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.2.0` 重装
 
 ### 关键注意点
 
