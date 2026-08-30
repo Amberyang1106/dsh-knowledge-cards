@@ -23,10 +23,20 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
     <img width="2964" height="774" alt="image" src="https://github.com/user-attachments/assets/5219cb90-ba66-413a-a139-543824891faa" />
 
   - 资料：`raw/sources/` 资料源状态（SHA256 增量缓存），一键把待摄入清单交给 agent
+    <img width="2974" height="768" alt="image" src="https://github.com/user-attachments/assets/52a3cc26-b250-4a45-9859-92d7fff73a07" />
+
   - 代码：`code/` 目录代码文件浏览 / 上传 / 读取 / 删除（原样保存，不经 LLM）
+    <img width="2954" height="720" alt="image" src="https://github.com/user-attachments/assets/e9385757-f37a-402a-8d74-a063a3b8cc52" />
+
   - 看板：`log.md` 时序操作记录（摄入 / 提交 / 编辑 / 审核）
+    <img width="2944" height="690" alt="image" src="https://github.com/user-attachments/assets/5a6e6231-7041-450a-b235-34898b12deff" />
+
   - 审核：llm_wiki 异步人机协作队列（矛盾 / 重复 / 缺页 / 建议，含预定义操作与预生成搜索查询）
+    <img width="2970" height="680" alt="image" src="https://github.com/user-attachments/assets/185f0573-487c-476e-b25e-4d135b3436e9" />
+
   - 知识库管理：多知识库创建 / 切换
+    <img width="2954" height="1128" alt="image" src="https://github.com/user-attachments/assets/cf2220d0-dcd9-417c-be32-1bdb38839862" />
+
 - **宿主 `/api/dsh-knowledge/*` 路由**：kbs（列表/创建）、cards（列表/搜索）、card（详情）、commit、card/edit、log、sources、lint、import-cards、rebuild、code（列表/上传）、code/content、code/delete、reviews、reviews/resolve、audit、audit-prompt
 - **14 个 agent 工具**（任意项目会话可用，跨项目上下文注入）：`wiki_kbs` / `wiki_create_kb` / `wiki_search` / `wiki_read` / `wiki_edit_card` / `wiki_ingest` / `wiki_commit` / `wiki_import_cards` / `wiki_lint` / `wiki_audit` / `wiki_review_submit` / `wiki_reviews` / `wiki_code_list` / `wiki_code_read`
 
