@@ -4,7 +4,7 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 
 基于 [Karpathy 的 LLM Wiki 方法论](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 与 [nashsu/llm_wiki](https://github.com/nashsu/llm_wiki) 的实现范式：**原始资料（只读）→ LLM 维护的知识卡片 → schema/purpose 规则**。
 
-自包含分发：独立 git 仓库（不依赖 dsh-web-ui monorepo / linxin666 发布通道），经 `dsh plugin` 单命令安装。
+自包含分发：独立 git仓库，经 `dsh plugin` 单命令安装。
 
 ## 目的与背景
 
