@@ -19,7 +19,9 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 ## 功能
 
 - **面板 6 个 tab**：
-  - 卡片墙：按类型分组浏览 / 搜索 / 详情（frontmatter + Markdown + `[[wikilink]]` 交叉引用）
+  - 卡片墙：按类型分组浏览 / 搜索 / 详情（frontmatter + Markdown + `[[wikilink]]` 交叉引用）,同时可以点击右上角进行知识库的切换
+    <img width="2964" height="774" alt="image" src="https://github.com/user-attachments/assets/5219cb90-ba66-413a-a139-543824891faa" />
+
   - 资料：`raw/sources/` 资料源状态（SHA256 增量缓存），一键把待摄入清单交给 agent
   - 代码：`code/` 目录代码文件浏览 / 上传 / 读取 / 删除（原样保存，不经 LLM）
   - 看板：`log.md` 时序操作记录（摄入 / 提交 / 编辑 / 审核）
