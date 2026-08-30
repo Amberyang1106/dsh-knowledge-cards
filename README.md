@@ -21,6 +21,8 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 - **面板 7 个 tab**：
   - 卡片墙：按类型分组浏览 / 搜索 / 详情（frontmatter + Markdown + `[[wikilink]]` 交叉引用）,同时可以点击右上角进行知识库的切换；**「+ 新建卡片」直接手写创建卡片**（type/title/摘要/标签/关联/来源/正文全字段，无需走 agent）
     <img width="2964" height="774" alt="image" src="https://github.com/user-attachments/assets/5219cb90-ba66-413a-a139-543824891faa" />
+    <img width="1958" height="1464" alt="image" src="https://github.com/user-attachments/assets/a3e47071-de13-4f26-8410-8032bc78d9e8" />
+
 
   - 资料：`raw/sources/` 资料源状态（SHA256 增量缓存），一键把待摄入清单交给 agent
     <img width="2974" height="768" alt="image" src="https://github.com/user-attachments/assets/52a3cc26-b250-4a45-9859-92d7fff73a07" />
@@ -38,6 +40,8 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
     <img width="2954" height="1128" alt="image" src="https://github.com/user-attachments/assets/cf2220d0-dcd9-417c-be32-1bdb38839862" />
 
   - 回收站：已删除的卡片与知识库，逐项**恢复**或**彻底删除**（删除是软删除——卡片在 `<kb>/.trash/`、知识库在 `~/.dsh/knowledge-cards/.trash/`，可随时恢复；彻底删除才物理清除）
+    <img width="1990" height="454" alt="image" src="https://github.com/user-attachments/assets/0976e3fe-47ad-48aa-bb40-fe4ba40cd391" />
+
 - **宿主 `/api/dsh-knowledge/*` 路由**：kbs（列表/创建）、cards（列表/搜索）、card（详情）、commit、card/edit、**card/create（手动建卡）**、**card/delete · card/restore · card/purge（卡片回收站）**、**kbs/delete · kbs/restore · kbs/purge（知识库回收站）**、**trash（回收站列表）**、log、sources、lint、import-cards、rebuild、code（列表/上传）、code/content、code/delete、reviews、reviews/resolve、audit、audit-prompt
 - **21 个 agent 工具**（任意项目会话可用，跨项目上下文注入）：`wiki_kbs` / `wiki_create_kb` / `wiki_search` / `wiki_read` / `wiki_edit_card` / `wiki_ingest` / `wiki_commit` / `wiki_import_cards` / `wiki_lint` / `wiki_audit` / `wiki_review_submit` / `wiki_reviews` / `wiki_code_list` / `wiki_code_read` / **`wiki_card_delete` / `wiki_card_restore` / `wiki_card_purge`** / **`wiki_kb_delete` / `wiki_kb_restore` / `wiki_kb_purge`** / **`wiki_trash_list`**（删除均为软删除入回收站，`purge` 才是物理删除、仅在用户明确要求时使用）
 
