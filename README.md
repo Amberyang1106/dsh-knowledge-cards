@@ -1,6 +1,6 @@
 # @amberyang1106/dsh-knowledge-cards
 
-DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡片」入口，中央列展示知识库面板（卡片墙 / 资料 / 代码 / 看板 / 审核 / 知识库管理 / 回收站），宿主经 `/api/dsh-knowledge/*` 路由读写本地知识库，并提供 21 个 `wiki_*` agent 工具，让任意项目会话把领域知识作为上下文拉进来。
+DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡片」入口，中央列展示知识库面板（卡片墙 / 资料 / 代码 / 看板 / 审核 / 知识库管理 / 回收站），宿主经 `/api/dsh-knowledge/*` 路由读写本地知识库，并提供 21 个 `wiki_*` agent 工具，让任意项目会话把领域知识作为上下文拉进来。支持 **`rules` 规则卡类型**与批量规则集读取接口（`GET /api/dsh-knowledge/rules`），供 ROW PSD Recon 等对账管道在运行时读取并执行声明式校验规则（确定性、无 LLM）。
 
 基于 [Karpathy 的 LLM Wiki 方法论](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 与 [nashsu/llm_wiki](https://github.com/nashsu/llm_wiki) 的实现范式：**原始资料（只读）→ LLM 维护的知识卡片 → schema/purpose 规则**。
 
@@ -42,7 +42,8 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
   - 回收站：已删除的卡片与知识库，逐项**恢复**或**彻底删除**（删除是软删除——卡片在 `<kb>/.trash/`、知识库在 `~/.dsh/knowledge-cards/.trash/`，可随时恢复；彻底删除才物理清除）
     <img width="1990" height="454" alt="image" src="https://github.com/user-attachments/assets/0976e3fe-47ad-48aa-bb40-fe4ba40cd391" />
 
-- **宿主 `/api/dsh-knowledge/*` 路由**：kbs（列表/创建）、cards（列表/搜索）、card（详情）、commit、card/edit、**card/create（手动建卡）**、**card/delete · card/restore · card/purge（卡片回收站）**、**kbs/delete · kbs/restore · kbs/purge（知识库回收站）**、**trash（回收站列表）**、log、sources、lint、import-cards、rebuild、code（列表/上传）、code/content、code/delete、reviews、reviews/resolve、audit、audit-prompt
+- **宿主 `/api/dsh-knowledge/*` 路由**：kbs（列表/创建）、cards（列表/搜索）、card（详情）、commit、card/edit、**card/create（手动建卡）**、**card/delete · card/restore · card/purge（卡片回收站）**、**kbs/delete · kbs/restore · kbs/purge（知识库回收站）**、**trash（回收站列表）**、**rules（规则集编译）**、log、sources、lint、import-cards、rebuild、code（列表/上传）、code/content、code/delete、reviews、reviews/resolve、audit、audit-prompt
+- **规则卡（type=rules）+ 规则集接口**：面板「+ 新建卡片」选 `rules` 类型可直接编写规则卡（type/title/rule_id/rule_set/status/conditions/outcome/test_cases 整卡 frontmatter 为**嵌套 YAML**，建卡与编辑提供模板化 YAML 编辑器）；生命周期 `draft → review → active → deprecated`。`GET /api/dsh-knowledge/rules?kb&ruleSet&status` 批量编译 active（且生效期内）规则：结构校验（必填字段 / 状态机 / 操作符白名单 eq/ne/gt/ge/lt/le/in/not_in/is_blank/is_not_blank/contains）、过滤非 active、生成内容版本 `sha256:` 哈希，返回 `{ruleSet, version, hash, rules[], invalidRules[]}`——坏规则显式报告、不静默丢。规则供 ROW PSD Recon 等对账程序运行时读取执行；新增/停用场景只需维护卡片，无需改消费方代码。
 - **21 个 agent 工具**（任意项目会话可用，跨项目上下文注入）：`wiki_kbs` / `wiki_create_kb` / `wiki_search` / `wiki_read` / `wiki_edit_card` / `wiki_ingest` / `wiki_commit` / `wiki_import_cards` / `wiki_lint` / `wiki_audit` / `wiki_review_submit` / `wiki_reviews` / `wiki_code_list` / `wiki_code_read` / **`wiki_card_delete` / `wiki_card_restore` / `wiki_card_purge`** / **`wiki_kb_delete` / `wiki_kb_restore` / `wiki_kb_purge`** / **`wiki_trash_list`**（删除均为软删除入回收站，`purge` 才是物理删除、仅在用户明确要求时使用）
 
 ## 知识库布局（每库）
@@ -68,10 +69,10 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 > ⚠️ **仓库为私有**：安装前需先被授予该仓库的读权限（维护者将你加为 GitHub 协作者，或你已在组织的允许列表内）。首次安装时 git 会弹出 GitHub 登录，用你自己的账号登录即可；未授权时会报 `Authentication failed` / `could not read Username`。
 
 ```sh
-dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.2.0
+dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.3.0
 ```
 
-> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.2.0` 换成新 tag。
+> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.3.0` 换成新 tag。
 
 重启 `dsh web`，侧边栏出现「知识卡片」。你的知识库数据在 `~/.dsh/knowledge-cards/`，安装/升级/卸载插件均不影响。
 
@@ -101,7 +102,7 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 | 模式 | 命令 | 用途 |
 |---|---|---|
 | 开发模式（link:） | `dsh plugin --profile web add C:/Users/yangtt16/dsh-knowledge-cards` | 日常开发：改代码 → build → 重启即生效 |
-| 发布验证模式（github spec） | `dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.2.0` | 验证用户视角的安装；与 README 安装命令一致 |
+| 发布验证模式（github spec） | `dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.3.0` | 验证用户视角的安装；与 README 安装命令一致 |
 | 卸载 | `dsh plugin --profile web remove @amberyang1106/dsh-knowledge-cards` | 移除依赖与 bundles 条目 |
 
 原理：`dsh plugin` 把参数转发给 profile 目录里的 pnpm，成功后自动 reconcile `dsh.profile.bundles`——同名包增删 spec 不会双重挂载。
@@ -120,9 +121,9 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 2. 更新 README（功能变化、Roadmap 里已完成项勾掉）
 3. **同步本地 dsh-wiki 工作区 README**（`C:\Users\yangtt16\OneDrive - Lenovo\AI Test\Finance KM\dsh-wiki\README.md`）：功能特性 / 路由数 / 工具数 / 面板 tab / 测试数 / Changelog / 后续计划，与本仓库 README、CHANGELOG.md 保持口径一致
 4. `pnpm build` 确保 `lib/` 同步 → `git add -A && git commit`
-5. `git tag v0.2.0 && git push && git push --tags`
-6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.2.0` → 重启验证 → 再切回 link: 开发
-7. 更新 GitHub Release（`gh release create v0.2.0 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.2.0` 重装
+5. `git tag v0.3.0 && git push && git push --tags`
+6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.3.0` → 重启验证 → 再切回 link: 开发
+7. 更新 GitHub Release（`gh release create v0.3.0 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.3.0` 重装
 
 ### 关键注意点
 

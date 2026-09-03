@@ -2,6 +2,48 @@
 
 本插件的版本发布记录。安装/升级方式见 [README](README.md#安装)。
 
+## v0.3.0（2026-09-03）— 规则卡（type=rules）+ 嵌套 YAML frontmatter + 规则集接口
+
+### 与 v0.2.0 的主要差异
+
+v0.3.0 为「知识驱动的可执行校验规则」铺路：知识卡片从「人/agent 阅读的知识库」扩展为**可被对账管道（如 ROW PSD Recon）运行时读取执行的声明式规则库**——规则不写死在 SQL/Python，而是作为卡片维护，版本可追溯。
+
+### ✨ 新功能 1：`rules` 卡片类型
+
+- 新增页面类型 **`rules`**（存放于 `wiki/rules/`，新库自动播种目录与 schema 行，旧库首次写入自动建目录）
+- 面板「+ 新建卡片」选择 `rules` → 自动载入**模板化 YAML 编辑器**，整卡 frontmatter 即规则定义；卡片详情「编辑」对 rules 卡走**整卡 YAML 全量替换**（type 不可改、created 保留、看板记「规则配置已更新」）
+- 规则生命周期：`draft → review → active → deprecated`；仅 `active` 且生效期内（effective_from/to）的规则参与运行
+
+### ✨ 新功能 2：嵌套 YAML frontmatter（frontmatter.ts 结构化子集）
+
+- 解析/序列化从「扁平标量」扩展为结构化子集：**flow map** `{k: v, …}`、**缩进块 map/列表**、**对象数组**（如 `conditions` / `outcome` / `test_cases`），规范序列化可无损回环
+- 纯增量扩展：平铺卡片（既有格式）不触发新分支、行为不变；宽容解析保留（```yaml 围栏 / CRLF / 缺失开栏自动修复）；嵌套 null/undefined 值安全跳过
+- 新增 9 项单测（嵌套回环 / 宽容手写 YAML / flow 解析 / managed 键判定 / 兼容性）
+
+### ✨ 新功能 3：规则集编译接口 `GET /api/dsh-knowledge/rules`
+
+- 按 `?kb&ruleSet&status`（status 默认 active）批量编译：定位规则卡 → 解析 frontmatter → **结构校验**（必填 rule_id/rule_set/conditions/outcome.category、状态机、操作符白名单 `eq/ne/gt/ge/lt/le/in/not_in/is_blank/is_not_blank/contains`）→ 过滤非 active 与非生效期 → 生成内容版本 `sha256:xxxxxxxx` 哈希
+- 返回 `{kb, ruleSet, version, hash, generatedAt, statusFilter, rules[], invalidRules[]}`——**坏规则显式报告**（invalidRules 带 issue 明细），绝不静默转「未命中」
+- 事实注册表由消费方（对账程序）持有：新场景若只用已有事实字段与操作符，仅需维护知识卡，无需改动消费方代码
+
+### 🔧 写路径与其它
+
+- `commitPages` / 批量导入支持额外 frontmatter 键透传（托管键 type/title/description/tags/related/sources/created/updated 恒优先）
+- `/card/create` 与 `/card/edit` 接受整卡 `frontmatterYaml`（服务端解析，前端零 YAML 依赖）；`createCard` 按 slug 回读（含空格/斜杠标题可用）
+- schema 播种模板新增 rules 类型说明行
+- 路由 25 → 26；测试 30 → 40（+frontmatter 9 + 规则卡全流程用例）+ smoke ALL PASS
+- 随库示例：`row-psd` 知识库已播种 6 张 B3/B4 无 WBS 诊断规则卡（001~004 active / 005~006 draft，compile 验证 4 active 无 invalid）
+
+### 安装 / 升级
+
+```sh
+dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.3.0
+```
+
+重启 `dsh web` 生效；知识库数据不受影响。
+
+---
+
 ## v0.2.0（2026-08-30）— 手动建卡 + 删除/回收站
 
 ### 与 v0.1.0 的主要差异
