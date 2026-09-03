@@ -96,6 +96,14 @@ export interface CardEditInput {
     related?: string[];
     sources?: string[];
     body?: string;
+    /**
+     * Full frontmatter payload (canonical YAML without `---` fences) that
+     * REPLACES the whole frontmatter — the rule-card editing path (type=rules),
+     * where non-managed structured keys (rule_id / conditions / outcome …) are
+     * edited as a whole. Managed invariants are enforced: type must stay equal,
+     * created is preserved, updated is re-stamped on change.
+     */
+    frontmatterYaml?: string;
 }
 /**
  * Manually edit one card in place (same slug/path — inbound [[wikilinks]]

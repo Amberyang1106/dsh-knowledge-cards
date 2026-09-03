@@ -9,10 +9,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { isManagedFrontmatterKey, parseYamlPayload } from '../core/frontmatter.ts'
 import type { CardMeta, PageInput } from '../core/types.ts'
 import { searchCards } from '../core/search.ts'
 import { auditKb, buildDeepAuditPromptForKb } from './audit.ts'
 import { lintKb } from './lint.ts'
+import { compileRuleSet } from './rules.ts'
 import {
   addReview, commitPages, createCard, createKb, deleteCard, deleteCodeFile, deleteKb, editCard, getKb, importCards,
   kbSummary, listCards, listCodeFiles, listKbSummaries, listLogEntries, listReviews, listSources, listTrash,
@@ -244,6 +246,7 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
             related: fields.related !== undefined ? asStringArray(fields.related) : undefined,
             sources: fields.sources !== undefined ? asStringArray(fields.sources) : undefined,
             body: fields.body !== undefined ? asString(fields.body) : undefined,
+            frontmatterYaml: fields.frontmatterYaml !== undefined ? asString(fields.frontmatterYaml) : undefined,
           })
           ok(res, { result })
         } catch (error) {
@@ -549,17 +552,46 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
           const kbId = asString(body?.kb)
           const kb = await getKb(kbId)
           if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
-          const type = asString(body?.type).trim()
-          const title = asString(body?.title).trim()
-          if (type === '' || title === '') return json(res, { ok: false, error: 'type and title are required' }, 400)
+
+          // Rule cards (and any structured card) may carry their whole
+          // frontmatter as one canonical YAML payload — single source of truth
+          // for managed + extra keys; no client-side YAML parsing needed.
+          const yaml = asString(body?.frontmatterYaml).trim()
+          let parsedYaml: Record<string, unknown> | null = null
+          if (yaml !== '') {
+            parsedYaml = parseYamlPayload(yaml)
+            if (parsedYaml === null) return json(res, { ok: false, error: 'frontmatterYaml 不是有效 YAML（需 key: value 结构）' }, 400)
+          }
+          const type = (parsedYaml !== null ? asString(parsedYaml.type) : asString(body?.type)).trim()
+          const title = (parsedYaml !== null ? asString(parsedYaml.title) : asString(body?.title)).trim()
+          if (type === '' || title === '') return json(res, { ok: false, error: 'type and title are required（YAML 模式下写在 YAML 中）' }, 400)
+          const description = parsedYaml !== null
+            ? (parsedYaml.description !== undefined ? asString(parsedYaml.description)?.trim() || undefined : undefined)
+            : (body?.description !== undefined ? asString(body.description).trim() || undefined : undefined)
+          const yamlList = (value: unknown): string[] => {
+            if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter((item) => item !== '')
+            if (typeof value === 'string') return value.split(',').map((item) => item.trim()).filter((item) => item !== '')
+            return []
+          }
+          const tags = parsedYaml !== null ? yamlList(parsedYaml.tags) : asStringArray(body?.tags)
+          const related = parsedYaml !== null ? yamlList(parsedYaml.related) : asStringArray(body?.related)
+          const sources = parsedYaml !== null ? yamlList(parsedYaml.sources) : asStringArray(body?.sources)
+          const frontmatter: Record<string, unknown> | undefined = parsedYaml === null ? undefined : (() => {
+            const extra: Record<string, unknown> = {}
+            for (const [key, value] of Object.entries(parsedYaml as Record<string, unknown>)) {
+              if (!isManagedFrontmatterKey(key) && value !== null && value !== undefined) extra[key] = value
+            }
+            return extra
+          })()
           const result = await createCard(kb, {
             type,
             title,
-            description: body?.description !== undefined ? asString(body.description).trim() || undefined : undefined,
-            tags: asStringArray(body?.tags),
-            related: asStringArray(body?.related),
-            sources: asStringArray(body?.sources),
+            description,
+            tags,
+            related,
+            sources,
             body: asString(body?.body),
+            frontmatter,
           })
           ok(res, { result })
         } catch (error) {
@@ -686,6 +718,29 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
           const url = new URL(req.url ?? '/', 'http://localhost')
           const kbId = queryParam(url, 'kb')
           ok(res, await listTrash(kbId !== '' ? kbId : undefined))
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
+        }
+      },
+    },
+    // ------------------------------------------------------------ rule set compile (structured rule cards)
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/rules',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'GET') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const url = new URL(req.url ?? '/', 'http://localhost')
+          const kbId = queryParam(url, 'kb')
+          const ruleSet = queryParam(url, 'ruleSet')
+          const status = queryParam(url, 'status')
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          ok(res, await compileRuleSet(kb, {
+            ruleSet: ruleSet !== '' ? ruleSet : undefined,
+            status: status !== '' ? status : undefined,
+          }))
         } catch (error) {
           json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
         }

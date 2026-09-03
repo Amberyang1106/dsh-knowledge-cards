@@ -55,6 +55,8 @@ declare const zh: {
     readonly 'create.type': "类型";
     readonly 'create.save': "创建";
     readonly 'create.created': "已创建卡片「{title}」";
+    readonly 'create.ruleHint': "规则卡（type=rules）：整卡 frontmatter 即可执行规则 YAML——必填 title / rule_id / rule_set / status / conditions / outcome.category；生命周期 draft → review → active → deprecated，仅 active 且在生效期内的规则会被对账程序读取执行（GET /api/dsh-knowledge/rules）。正文写业务说明与证据，供人阅读。";
+    readonly 'create.ruleYaml': "规则 YAML（frontmatter 可执行部分）";
     readonly 'form.tags': "标签（逗号分隔）";
     readonly 'form.related': "关联 slug（逗号分隔）";
     readonly 'form.sources': "来源文件名（逗号分隔）";

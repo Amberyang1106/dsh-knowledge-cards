@@ -21,7 +21,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
-import { parseFrontmatter, serializePage, slugFromTitle } from '../core/frontmatter.ts'
+import { isManagedFrontmatterKey, parseFrontmatter, parseYamlPayload, serializePage, slugFromTitle } from '../core/frontmatter.ts'
 import { extractWikilinks } from '../core/search.ts'
 import type { Card, CardMeta, CommitResult, KbConfig, KbSummary, PageInput, ReviewItem, ReviewKind, SourceStatus, TrashCardEntry, TrashKbEntry } from '../core/types.ts'
 import { REVIEW_OPTIONS } from '../core/types.ts'
@@ -170,6 +170,7 @@ export async function ensureKbStructure(kbPath: string): Promise<void> {
 | query | wiki/queries/ | Open questions under active investigation |
 | comparison | wiki/comparisons/ | Side-by-side analysis of related entities |
 | synthesis | wiki/synthesis/ | Cross-cutting summaries and conclusions |
+| rules | wiki/rules/ | Executable validation rules (structured YAML in frontmatter, read by external check pipelines) |
 | overview | wiki/ | High-level project summary (one per project) |
 
 ## Naming Conventions
@@ -528,6 +529,13 @@ export async function commitPages(
     fm.tags = unionStrings(existing?.tags ?? [], page.tags ?? [])
     fm.related = unionStrings(existing?.related ?? [], page.related ?? [])
     fm.sources = unionStrings(existing?.sources ?? [], page.sources ?? [])
+    // Extra structured frontmatter (rule cards): merge non-managed keys only —
+    // managed keys always win, keeping the deterministic card envelope stable.
+    if (page.frontmatter !== undefined) {
+      for (const [key, value] of Object.entries(page.frontmatter)) {
+        if (!isManagedFrontmatterKey(key) && value !== undefined && value !== null) fm[key] = value
+      }
+    }
 
     const content = serializePage(fm, page.body)
     await writeTextAtomic(join(wikiDir(kb), path), content)
@@ -584,7 +592,10 @@ export async function commitPages(
  */
 export async function createCard(kb: KbConfig, input: PageInput): Promise<{ created: string[]; logEntry: string; card: Card }> {
   const result = await commitPages(kb, [input], input.sources ?? [], { logAction: 'create' })
-  const card = await readCard(kb, input.title)
+  // Read back by the slug commitPages derived from the title — raw titles with
+  // spaces/slashes (e.g. "B3/B4 无 WBS：…") never match a filename stem.
+  const slug = slugFromTitle(input.title)
+  const card = await readCard(kb, slug)
   if (card === null) throw new Error(`卡片创建失败: ${input.title}`)
   return { created: result.created, logEntry: result.logEntry, card }
 }
@@ -766,6 +777,14 @@ export interface CardEditInput {
   related?: string[]
   sources?: string[]
   body?: string
+  /**
+   * Full frontmatter payload (canonical YAML without `---` fences) that
+   * REPLACES the whole frontmatter — the rule-card editing path (type=rules),
+   * where non-managed structured keys (rule_id / conditions / outcome …) are
+   * edited as a whole. Managed invariants are enforced: type must stay equal,
+   * created is preserved, updated is re-stamped on change.
+   */
+  frontmatterYaml?: string
 }
 
 /**
@@ -782,6 +801,35 @@ export async function editCard(kb: KbConfig, slug: string, input: CardEditInput)
 
   const changed: string[] = []
   const title = input.title?.trim()
+
+  // Full-frontmatter replacement (rule cards): parse the pasted canonical
+  // payload, enforce invariants, and swap the whole fm in one go.
+  let fullFmReplaced = false
+  if (input.frontmatterYaml !== undefined) {
+    const parsedFull = parseYamlPayload(input.frontmatterYaml)
+    if (parsedFull === null || typeof parsedFull.title !== 'string' || parsedFull.title.trim() === '') {
+      throw new Error('YAML 无效：必须包含 title（非空）。type 保持不变，无需重复提供也可保留。')
+    }
+    if (parsedFull.type !== undefined && parsedFull.type !== existing.type) {
+      throw new Error(`type 不可更改（保持 ${existing.type}）`)
+    }
+    const fresh: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(parsedFull)) {
+      if (value === undefined || value === null) continue
+      fresh[key] = value
+    }
+    fresh.type = existing.type
+    fresh.created = existing.created ?? (typeof fresh.created === 'string' && fresh.created !== '' ? fresh.created : undefined) ?? now
+    delete fresh.updated
+    const comparable = (object: Record<string, unknown>): string => JSON.stringify({ ...object, updated: '\u0000' })
+    if (comparable(fresh) !== comparable(fm)) {
+      changed.push('规则配置')
+      fullFmReplaced = true
+    }
+    for (const key of Object.keys(fm)) delete fm[key]
+    Object.assign(fm, fresh)
+  }
+
   if (title !== undefined && title !== '' && title !== existing.title) {
     fm.title = title
     changed.push('标题')
@@ -830,6 +878,7 @@ export async function editCard(kb: KbConfig, slug: string, input: CardEditInput)
     // Detailed change notes: per-field old → new, +added/-removed arrays,
     // and a body change summary (line counts + first added snippet).
     const notes: string[] = []
+    if (fullFmReplaced) notes.push('frontmatter: 规则配置已更新（YAML 全量替换）')
     if (title !== undefined && title !== '' && title !== existing.title) {
       notes.push(scalarChange('标题', existing.title, title))
     }

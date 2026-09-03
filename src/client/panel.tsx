@@ -38,9 +38,56 @@ function query(params: Record<string, string>): string {
   return text === '' ? '' : `?${text}`
 }
 
+/** Extract the frontmatter payload (between the `---` fences) of a raw card
+ * file — used to prefill the YAML editor of rule cards. */
+function frontmatterPayloadOf(raw: string): string {
+  const lines = raw.replace(/\r\n/g, '\n').split('\n')
+  const start = lines[0]?.trim() === '---' ? 1 : 0
+  const payload: string[] = []
+  for (let index = start; index < lines.length; index += 1) {
+    if (lines[index].trim() === '---') break
+    payload.push(lines[index])
+  }
+  return payload.join('\n').replace(/\n+$/, '')
+}
+
 const KB_STORAGE_KEY = 'dsh-knowledge-cards:kb'
 
-const TYPE_FILTERS = ['all', 'entity', 'concept', 'source', 'query', 'comparison', 'synthesis'] as const
+const TYPE_FILTERS = ['all', 'entity', 'concept', 'source', 'query', 'comparison', 'synthesis', 'rules'] as const
+
+/** Types offered by the manual create form (overview is auto-maintained). */
+const CREATE_TYPES = ['concept', 'entity', 'source', 'query', 'comparison', 'synthesis', 'rules'] as const
+
+/** Starter template for a rule card (type=rules) — canonical YAML frontmatter. */
+const RULE_YAML_TEMPLATE = [
+  'type: rules',
+  'title: ', // 必填：规则标题（生成 slug）
+  'description: 一句话说明',
+  'rule_id: ', // 必填：唯一标识，如 B3-NOWBS-001
+  'rule_set: b3-b4-no-wbs', // 必填：规则集，对账程序按此拉取
+  'applies_to: [B3]',
+  'status: draft', // draft → review → active → deprecated
+  'priority: 30',
+  'owner: Finance Transformation',
+  'effective_from: ',
+  'effective_to: ',
+  'version: 1',
+  'match: all', // all | any
+  'conditions:', // 至少一条：{fact, operator, value}
+  '  - fact: mspa03_customer_row_count',
+  '    operator: gt',
+  '    value: 0',
+  'outcome:',
+  '  category: WBS_FORMAT', // 必填
+  '  label: 结论标签',
+  '  explanation: 结论说明',
+  '  suggested_action: 建议动作',
+  'test_cases:',
+  '  - name: 支持案例',
+  '    facts:',
+  '      mspa03_customer_row_count: 1',
+  '    expected: SUPPORTED',
+].join('\n')
 
 // ---------------------------------------------------------------------------
 // small presentational pieces
@@ -137,9 +184,13 @@ function CardsTab({
   const [draftRelated, setDraftRelated] = useState('')
   const [draftSources, setDraftSources] = useState('')
   const [draftBody, setDraftBody] = useState('')
+  // Rule cards (type=rules) are authored as one canonical YAML frontmatter.
+  const [draftYaml, setDraftYaml] = useState('')
   const [savingDraft, setSavingDraft] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [createdNote, setCreatedNote] = useState<string | null>(null)
+
+  const isRuleDraft = draftType === 'rules'
 
   const openCreate = (): void => {
     setDraftType('concept')
@@ -149,29 +200,37 @@ function CardsTab({
     setDraftRelated('')
     setDraftSources('')
     setDraftBody('')
+    setDraftYaml('')
     setCreateError(null)
     setCreatedNote(null)
     setCreating(true)
   }
 
+  const switchDraftType = (type: string): void => {
+    setDraftType(type)
+    if (type === 'rules' && draftYaml.trim() === '') setDraftYaml(RULE_YAML_TEMPLATE)
+  }
+
   const saveCreate = async (): Promise<void> => {
-    if (draftTitle.trim() === '') return
+    if (isRuleDraft ? draftYaml.trim() === '' : draftTitle.trim() === '') return
     setSavingDraft(true)
     setCreateError(null)
     try {
       const data = await api<{ result: { card: CardMeta } }>('/api/dsh-knowledge/card/create', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          kb: kbId,
-          type: draftType,
-          title: draftTitle.trim(),
-          description: draftDesc.trim(),
-          tags: draftTags.split(',').map((tag) => tag.trim()).filter((tag) => tag !== ''),
-          related: draftRelated.split(',').map((item) => item.trim()).filter((item) => item !== ''),
-          sources: draftSources.split(',').map((item) => item.trim()).filter((item) => item !== ''),
-          body: draftBody,
-        }),
+        body: isRuleDraft
+          ? JSON.stringify({ kb: kbId, type: 'rules', frontmatterYaml: draftYaml, body: draftBody })
+          : JSON.stringify({
+              kb: kbId,
+              type: draftType,
+              title: draftTitle.trim(),
+              description: draftDesc.trim(),
+              tags: draftTags.split(',').map((tag) => tag.trim()).filter((tag) => tag !== ''),
+              related: draftRelated.split(',').map((item) => item.trim()).filter((item) => item !== ''),
+              sources: draftSources.split(',').map((item) => item.trim()).filter((item) => item !== ''),
+              body: draftBody,
+            }),
       })
       setCreating(false)
       setCreatedNote(t(undefined, 'create.created', { title: data.result.card.title }))
@@ -194,30 +253,50 @@ function CardsTab({
         {createError !== null && <div className={css.error}>{createError}</div>}
         <div className={css.editForm}>
           <label className={css.editLabel}>{t(undefined, 'create.type')}
-            <select className={css.select} value={draftType} onChange={(event) => setDraftType(event.target.value)}>
-              {['concept', 'entity', 'source', 'query', 'comparison', 'synthesis'].map((type) => <option key={type} value={type}>{type}</option>)}
+            <select className={css.select} value={draftType} onChange={(event) => switchDraftType(event.target.value)}>
+              {CREATE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
             </select>
           </label>
-          <label className={css.editLabel}>{t(undefined, 'card.title')}
-            <input className={css.input} value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} />
-          </label>
-          <label className={css.editLabel}>{t(undefined, 'card.desc')}
-            <input className={css.input} value={draftDesc} onChange={(event) => setDraftDesc(event.target.value)} />
-          </label>
-          <label className={css.editLabel}>{t(undefined, 'form.tags')}
-            <input className={css.input} value={draftTags} placeholder="财务, allocation" onChange={(event) => setDraftTags(event.target.value)} />
-          </label>
-          <label className={css.editLabel}>{t(undefined, 'form.related')}
-            <input className={css.input} value={draftRelated} placeholder="利润中心, 成本分摊" onChange={(event) => setDraftRelated(event.target.value)} />
-          </label>
-          <label className={css.editLabel}>{t(undefined, 'form.sources')}
-            <input className={css.input} value={draftSources} placeholder="policy-2024.pdf" onChange={(event) => setDraftSources(event.target.value)} />
-          </label>
-          <label className={css.editLabel}>{t(undefined, 'card.body')}
-            <textarea className={css.editorTextarea} rows={14} value={draftBody} placeholder="Markdown，[[wikilink]] 互链" onChange={(event) => setDraftBody(event.target.value)} />
-          </label>
+          {isRuleDraft ? (
+            <>
+              <p className={css.note}>{t(undefined, 'create.ruleHint')}</p>
+              <label className={css.editLabel}>{t(undefined, 'create.ruleYaml')}
+                <textarea
+                  className={css.editorTextarea}
+                  rows={22}
+                  value={draftYaml}
+                  spellCheck={false}
+                  onChange={(event) => setDraftYaml(event.target.value)}
+                />
+              </label>
+              <label className={css.editLabel}>{t(undefined, 'card.body')}
+                <textarea className={css.editorTextarea} rows={6} value={draftBody} placeholder="业务说明 / 证据 / 备注（Markdown）" onChange={(event) => setDraftBody(event.target.value)} />
+              </label>
+            </>
+          ) : (
+            <>
+              <label className={css.editLabel}>{t(undefined, 'card.title')}
+                <input className={css.input} value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} />
+              </label>
+              <label className={css.editLabel}>{t(undefined, 'card.desc')}
+                <input className={css.input} value={draftDesc} onChange={(event) => setDraftDesc(event.target.value)} />
+              </label>
+              <label className={css.editLabel}>{t(undefined, 'form.tags')}
+                <input className={css.input} value={draftTags} placeholder="财务, allocation" onChange={(event) => setDraftTags(event.target.value)} />
+              </label>
+              <label className={css.editLabel}>{t(undefined, 'form.related')}
+                <input className={css.input} value={draftRelated} placeholder="利润中心, 成本分摊" onChange={(event) => setDraftRelated(event.target.value)} />
+              </label>
+              <label className={css.editLabel}>{t(undefined, 'form.sources')}
+                <input className={css.input} value={draftSources} placeholder="policy-2024.pdf" onChange={(event) => setDraftSources(event.target.value)} />
+              </label>
+              <label className={css.editLabel}>{t(undefined, 'card.body')}
+                <textarea className={css.editorTextarea} rows={14} value={draftBody} placeholder="Markdown，[[wikilink]] 互链" onChange={(event) => setDraftBody(event.target.value)} />
+              </label>
+            </>
+          )}
           <div className={css.editActions}>
-            <button className={css.run} disabled={savingDraft || draftTitle.trim() === ''} onClick={() => void saveCreate()}>
+            <button className={css.run} disabled={savingDraft || (isRuleDraft ? draftYaml.trim() === '' : draftTitle.trim() === '')} onClick={() => void saveCreate()}>
               {savingDraft ? '…' : t(undefined, 'create.save')}
             </button>
             <button className={css.runSmall} onClick={() => setCreating(false)}>{t(undefined, 'card.cancel')}</button>
@@ -289,6 +368,8 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
   const [editDesc, setEditDesc] = useState('')
   const [editTags, setEditTags] = useState('')
   const [editBody, setEditBody] = useState('')
+  // Rule cards (type=rules) edit their whole frontmatter as one YAML payload.
+  const [editYaml, setEditYaml] = useState('')
   const [saving, setSaving] = useState(false)
   const [savedNote, setSavedNote] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -308,6 +389,7 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
     setEditDesc(card.description ?? '')
     setEditTags(card.tags.join(', '))
     setEditBody(card.body)
+    setEditYaml(frontmatterPayloadOf(card.raw))
     setSavedNote(null)
     setEditing(true)
   }
@@ -317,17 +399,21 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
     setSaving(true)
     setError(null)
     try {
+      const isRule = card.type === 'rules'
+      const payload = isRule
+        ? JSON.stringify({ kb: kbId, slug: card.slug, frontmatterYaml: editYaml, body: editBody })
+        : JSON.stringify({
+            kb: kbId,
+            slug: card.slug,
+            title: editTitle,
+            description: editDesc,
+            tags: editTags.split(',').map((tag) => tag.trim()).filter((tag) => tag !== ''),
+            body: editBody,
+          })
       const data = await api<{ result: { card: Card; changed: string[] } }>('/api/dsh-knowledge/card/edit', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          kb: kbId,
-          slug: card.slug,
-          title: editTitle,
-          description: editDesc,
-          tags: editTags.split(',').map((tag) => tag.trim()).filter((tag) => tag !== ''),
-          body: editBody,
-        }),
+        body: payload,
       })
       setCard(data.result.card)
       setEditing(false)
@@ -375,17 +461,34 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
         <h2 className={css.detailTitle}>{t(undefined, 'edit.title')}</h2>
         {savedNote !== null && <div className={css.lintResult}>{savedNote}</div>}
         <div className={css.editForm}>
-          <label className={css.editLabel}>{t(undefined, 'card.title')}
-            <input className={css.input} value={editTitle} onChange={(event) => setEditTitle(event.target.value)} />
-          </label>
-          <label className={css.editLabel}>{t(undefined, 'card.desc')}
-            <input className={css.input} value={editDesc} onChange={(event) => setEditDesc(event.target.value)} />
-          </label>
-          <label className={css.editLabel}>{t(undefined, 'card.tags')}
-            <input className={css.input} value={editTags} placeholder="逗号分隔，如 财务, allocation" onChange={(event) => setEditTags(event.target.value)} />
-          </label>
+          {card.type === 'rules' ? (
+            <>
+              <p className={css.note}>{t(undefined, 'create.ruleHint')}</p>
+              <label className={css.editLabel}>{t(undefined, 'create.ruleYaml')}
+                <textarea
+                  className={css.editorTextarea}
+                  rows={22}
+                  value={editYaml}
+                  spellCheck={false}
+                  onChange={(event) => setEditYaml(event.target.value)}
+                />
+              </label>
+            </>
+          ) : (
+            <>
+              <label className={css.editLabel}>{t(undefined, 'card.title')}
+                <input className={css.input} value={editTitle} onChange={(event) => setEditTitle(event.target.value)} />
+              </label>
+              <label className={css.editLabel}>{t(undefined, 'card.desc')}
+                <input className={css.input} value={editDesc} onChange={(event) => setEditDesc(event.target.value)} />
+              </label>
+              <label className={css.editLabel}>{t(undefined, 'card.tags')}
+                <input className={css.input} value={editTags} placeholder="逗号分隔，如 财务, allocation" onChange={(event) => setEditTags(event.target.value)} />
+              </label>
+            </>
+          )}
           <label className={css.editLabel}>{t(undefined, 'card.body')}
-            <textarea className={css.editorTextarea} rows={14} value={editBody} onChange={(event) => setEditBody(event.target.value)} />
+            <textarea className={css.editorTextarea} rows={card.type === 'rules' ? 6 : 14} value={editBody} onChange={(event) => setEditBody(event.target.value)} />
           </label>
           <div className={css.editActions}>
             <button className={css.run} disabled={saving} onClick={() => void saveEdit()}>{saving ? '…' : t(undefined, 'edit.save')}</button>
@@ -971,7 +1074,7 @@ function ReviewsTab({ kbId }: { kbId: string }): ReactElement {
           </label>
           <label className={css.editLabel}>type
             <select className={css.select} value={draftType} onChange={(event) => setDraftType(event.target.value)}>
-              {['concept', 'entity', 'source', 'query', 'comparison', 'synthesis'].map((type) => <option key={type} value={type}>{type}</option>)}
+              {CREATE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
             </select>
           </label>
           <label className={css.editLabel}>{t(undefined, 'card.body')}

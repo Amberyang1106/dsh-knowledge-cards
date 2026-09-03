@@ -77,7 +77,7 @@ describe('knowledge routes over HTTP', () => {
     process.env.DSH_KNOWLEDGE_CARDS_ROOT = root
     const { ctx, routes } = makeStubCtx()
     apply(ctx as never)
-    expect(routes.length).toBe(25)
+    expect(routes.length).toBe(26)
     server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const route = routes.find((candidate) => candidate.kind === 'exact' && candidate.path === url.pathname)
@@ -394,6 +394,103 @@ describe('knowledge routes over HTTP', () => {
     const missingRestore = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/restore', { kb: kbId, slug: 'nope' })
     expect(missingRestore.status).toBe(400)
     expect(String(missingRestore.data.error)).toContain('回收站')
+  })
+
+  it('manages rule cards (type=rules) and compiles rule sets over /rules', async () => {
+    // A dedicated KB so the later KB-delete test stays independent.
+    const created = await jsonRequest(port, 'POST', '/api/dsh-knowledge/kbs', { name: '规则测试库' })
+    const rkb = (created.data.kb as { id: string })
+    const rkbId = rkb.id
+
+    const activeRule = [
+      'type: rules',
+      'title: MSPA03存在WBS但均非9位',
+      'description: 规则卡测试',
+      'rule_id: B3-NOWBS-003',
+      'rule_set: b3-b4-no-wbs',
+      'applies_to: [B3]',
+      'status: active',
+      'priority: 30',
+      'match: all',
+      'conditions:',
+      '  - fact: mspa03_customer_row_count',
+      '    operator: gt',
+      '    value: 0',
+      '  - fact: mspa03_valid_9char_wbs_count',
+      '    operator: eq',
+      '    value: 0',
+      'outcome:',
+      '  category: WBS_FORMAT',
+      '  label: 非9位WBS',
+      'test_cases:',
+      '  - name: 支持案例',
+      '    facts:',
+      '      mspa03_customer_row_count: 1',
+      '      mspa03_valid_9char_wbs_count: 0',
+      '    expected: SUPPORTED',
+    ].join('\n')
+
+    // 1. create a rule card via the canonical YAML payload (no client parsing)
+    const cardCreated = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/create', {
+      kb: rkbId, type: 'rules', frontmatterYaml: activeRule, body: '业务说明。',
+    })
+    expect(cardCreated.data.ok).toBe(true)
+    const result = cardCreated.data.result as { created: string[]; card: { slug: string; type: string } }
+    expect(result.created[0]).toContain('rules/')
+    expect(result.card.type).toBe('rules')
+
+    // 2. /rules compiles the active set with a content version
+    const compiled = await jsonRequest(port, 'GET', `/api/dsh-knowledge/rules?kb=${encodeURIComponent(rkbId)}&ruleSet=b3-b4-no-wbs&status=active`)
+    expect(compiled.data.ok).toBe(true)
+    const rulesData = compiled.data as { version: string; hash: string; rules: Array<{ slug: string; spec: { rule_id: string; conditions: Array<{ fact: string; operator: string }>; outcome: { category: string } } }>; invalidRules: unknown[] }
+    expect(rulesData.rules).toHaveLength(1)
+    expect(rulesData.rules[0].spec.rule_id).toBe('B3-NOWBS-003')
+    expect(rulesData.rules[0].spec.conditions).toHaveLength(2)
+    expect(rulesData.rules[0].spec.conditions[1]).toEqual({ fact: 'mspa03_valid_9char_wbs_count', operator: 'eq', value: 0 })
+    expect(rulesData.rules[0].spec.outcome.category).toBe('WBS_FORMAT')
+    expect(rulesData.version).toMatch(/^sha256:/)
+    expect(rulesData.invalidRules).toHaveLength(0)
+
+    // 3. draft rules are excluded from active but visible under status=all
+    const draftRule = activeRule.replace('status: active', 'status: draft').replace('B3-NOWBS-003', 'B3-NOWBS-004').replace('title: MSPA03存在WBS但均非9位', 'title: 草案规则')
+    await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/create', { kb: rkbId, type: 'rules', frontmatterYaml: draftRule, body: '' })
+    const activeOnly = await jsonRequest(port, 'GET', `/api/dsh-knowledge/rules?kb=${encodeURIComponent(rkbId)}&ruleSet=b3-b4-no-wbs`)
+    expect((activeOnly.data.rules as unknown[]).length).toBe(1)
+    const allStatuses = await jsonRequest(port, 'GET', `/api/dsh-knowledge/rules?kb=${encodeURIComponent(rkbId)}&ruleSet=b3-b4-no-wbs&status=all`)
+    expect((allStatuses.data.rules as unknown[]).length).toBe(2)
+
+    // 4. structurally invalid rules surface in invalidRules and never run
+    const badRule = [
+      'type: rules',
+      'title: 坏规则',
+      'rule_id: B3-NOWBS-999',
+      'rule_set: b3-b4-no-wbs',
+      'status: active',
+      'conditions:',
+      '  - fact: mspa03_customer_row_count',
+      '    operator: bogus_operator',
+      '    value: 0',
+    ].join('\n')
+    await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/create', { kb: rkbId, type: 'rules', frontmatterYaml: badRule, body: '' })
+    const withInvalid = await jsonRequest(port, 'GET', `/api/dsh-knowledge/rules?kb=${encodeURIComponent(rkbId)}&ruleSet=b3-b4-no-wbs`)
+    const invalid = withInvalid.data.invalidRules as Array<{ slug: string; issues: string[] }>
+    expect(withInvalid.data.rules as unknown[]).toHaveLength(1)
+    expect(invalid.some((entry) => entry.issues.some((issue) => issue.includes('bogus_operator')))).toBe(true)
+
+    // 5. edit whole frontmatter via frontmatterYaml (deprecate the active rule)
+    const ruleSlug = result.card.slug
+    const deprecatedYaml = activeRule.replace('status: active', 'status: deprecated')
+    const edited = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/edit', {
+      kb: rkbId, slug: ruleSlug, frontmatterYaml: deprecatedYaml, body: '业务说明。',
+    })
+    expect(edited.data.ok).toBe(true)
+    expect((edited.data.result as { changed: string[] }).changed).toContain('规则配置')
+    const afterDeprecate = await jsonRequest(port, 'GET', `/api/dsh-knowledge/rules?kb=${encodeURIComponent(rkbId)}&ruleSet=b3-b4-no-wbs`)
+    expect((afterDeprecate.data.rules as unknown[]).length).toBe(0)
+
+    // 6. unknown facts are preserved for the evaluator side (structure kept)
+    const detail = await jsonRequest(port, 'GET', `/api/dsh-knowledge/card?kb=${encodeURIComponent(rkbId)}&slug=${encodeURIComponent(ruleSlug)}`)
+    expect((detail.data.card as { type: string }).type).toBe('rules')
   })
 
   it('deletes a knowledge base to the trash and restores it with its review queue', async () => {

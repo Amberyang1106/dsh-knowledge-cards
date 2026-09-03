@@ -7,6 +7,20 @@
  * repaired rather than rejected. The serializer emits the strict canonical
  * form the llm_wiki ingest prompt demands (first line `---`, inline arrays,
  * bare slug lists for related).
+ *
+ * Nested subset (rule cards, type=rules): beyond flat `key: scalar` /
+ * `key: [a, b]`, values may be inline flow maps `{k: v, ...}` and block
+ * lists/maps with two-space indentation:
+ *
+ *   conditions:
+ *     - fact: mspa03_customer_row_count
+ *       operator: gt
+ *       value: 0
+ *   outcome:
+ *     category: WBS_FORMAT
+ *
+ * The extension is additive — flat cards never trigger the new branches and
+ * keep their exact previous behavior.
  * @module dsh-knowledge-cards/core/frontmatter
  */
 export interface ParsedFrontmatter {
@@ -14,6 +28,13 @@ export interface ParsedFrontmatter {
     /** Body markdown, with the frontmatter block removed. */
     body: string;
 }
+/** Frontmatter keys the plugin itself manages on every card write. */
+export declare const MANAGED_FRONTMATTER_KEYS: readonly ["type", "title", "description", "tags", "related", "sources", "created", "updated"];
+export declare function isManagedFrontmatterKey(key: string): boolean;
+/** Parse `{k: v, nested: {…}, list: [a, b]}` into an object. */
+export declare function parseFlowMap(raw: string): Record<string, unknown>;
+/** Parse `[a, b, {k: v}, [x]]` into an array. */
+export declare function parseFlowArray(raw: string): unknown[];
 /**
  * Parse a wiki page's YAML frontmatter. Returns null frontmatter when no
  * frontmatter block is found (the whole content is treated as body).
@@ -26,4 +47,16 @@ export declare function parseFrontmatter(content: string): ParsedFrontmatter;
 export declare function serializePage(frontmatter: Record<string, unknown>, body: string): string;
 /** Extract the title from a filename stem (kebab → Title Case for display). */
 export declare function slugFromTitle(title: string): string;
+/**
+ * Parse a bare YAML payload (no `---` fences, e.g. pasted by the rule editor)
+ * into a frontmatter object. Returns null when no `key: value` is found.
+ */
+export declare function parseYamlPayload(payload: string): Record<string, unknown> | null;
+/**
+ * Canonical YAML text of a frontmatter object WITHOUT the enclosing `---`
+ * fences — used by the panel rule editor as editable text.
+ */
+export declare function renderYamlPayload(frontmatter: Record<string, unknown>): string;
+/** Whether a parsed frontmatter object contains any nested structure. */
+export declare function hasNestedFrontmatter(frontmatter: Record<string, unknown>): boolean;
 //# sourceMappingURL=frontmatter.d.ts.map

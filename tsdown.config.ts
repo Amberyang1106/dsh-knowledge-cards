@@ -9,7 +9,7 @@
  */
 import { clientBundle } from './shared/tsdown.client.ts'
 
-export default clientBundle('@amberyang1106/dsh-knowledge-cards', ['src/index.ts', 'src/host/store.ts', 'src/host/lint.ts', 'src/host/tools.ts', 'src/host/audit.ts', 'src/core/frontmatter.ts', 'src/core/search.ts'], {
+export default clientBundle('@amberyang1106/dsh-knowledge-cards', ['src/index.ts', 'src/host/store.ts', 'src/host/lint.ts', 'src/host/tools.ts', 'src/host/audit.ts', 'src/host/rules.ts', 'src/core/frontmatter.ts', 'src/core/search.ts'], {
   libExternal: [
     '@deepseek-ai/dsh-client-locale',
     '@deepseek-ai/dsh-client-runtime',

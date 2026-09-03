@@ -16,6 +16,7 @@ export const CARD_TYPES = [
   'comparison',
   'synthesis',
   'overview',
+  'rules',
 ] as const
 
 export type CardType = (typeof CARD_TYPES)[number] | (string & {})
@@ -28,6 +29,7 @@ export const TYPE_DIRS: Record<string, string> = {
   query: 'queries',
   comparison: 'comparisons',
   synthesis: 'synthesis',
+  rules: 'rules',
 }
 
 /** Card metadata as parsed from frontmatter (no body). */
@@ -123,6 +125,13 @@ export interface PageInput {
   /** Optional created/updated dates (bulk import preserves originals). */
   created?: string
   updated?: string
+  /**
+   * Optional extra frontmatter keys beyond the managed ones (type/title/
+   * description/tags/related/sources/created/updated) — used by rule cards
+   * (type=rules) whose executable spec lives in the frontmatter. Managed keys
+   * always win over these.
+   */
+  frontmatter?: Record<string, unknown>
 }
 
 /** Result of a commit operation. */
@@ -192,4 +201,99 @@ export interface TrashKbEntry {
   deletedAt: number
   /** Absolute path of the trashed KB directory. */
   trashPath: string
+}
+
+// ---------------------------------------------------------------------------
+// rule cards (type=rules): declarative, machine-executable validation rules
+// stored in the card FRONTMATTER as nested YAML (rule_id / rule_set / status /
+// conditions / outcome / test_cases …). The row-psd recon pipeline reads a
+// rule set via GET /api/dsh-knowledge/rules and evaluates it deterministically
+// (no LLM). Lifecycle: draft → review → active → deprecated.
+// ---------------------------------------------------------------------------
+
+/** Lifecycle of one rule card; only `active` (and in-effect) rules run. */
+export type RuleStatus = 'draft' | 'review' | 'active' | 'deprecated'
+
+export const RULE_STATUSES: RuleStatus[] = ['draft', 'review', 'active', 'deprecated']
+
+/** Whitelisted comparison operators for rule conditions (spec §7.4). */
+export const RULE_OPERATORS = [
+  'eq', 'ne', 'gt', 'ge', 'lt', 'le',
+  'in', 'not_in', 'is_blank', 'is_not_blank', 'contains',
+] as const
+
+export type RuleOperator = (typeof RULE_OPERATORS)[number]
+
+export type RuleMatch = 'all' | 'any'
+
+/** One condition inside a rule: a registered fact + fixed operator (+ value). */
+export interface RuleCondition {
+  fact: string
+  operator: RuleOperator | (string & {})
+  value?: string | number | boolean | Array<string | number> | null
+}
+
+/** What a matched rule claims, for display and aggregation. */
+export interface RuleOutcome {
+  category: string
+  label?: string
+  explanation?: string
+  suggested_action?: string
+}
+
+/** A supported/ excluded test case bundled with the rule. */
+export interface RuleTestCase {
+  name: string
+  facts?: Record<string, string | number | boolean | null>
+  expected?: string
+}
+
+/** Executable rule spec as parsed from a rule card's frontmatter. */
+export interface RuleSpec {
+  rule_id: string
+  rule_set: string
+  applies_to?: string[]
+  status?: RuleStatus | string
+  priority?: number
+  owner?: string
+  effective_from?: string
+  effective_to?: string
+  version?: string | number
+  match?: RuleMatch | string
+  conditions: RuleCondition[]
+  outcome: RuleOutcome
+  test_cases?: RuleTestCase[]
+  /** Any additional frontmatter keys beyond the known rule fields. */
+  [key: string]: unknown
+}
+
+/** One validated, runnable rule (a rule card that passed structural checks). */
+export interface CompiledRule {
+  slug: string
+  title: string
+  description?: string
+  updated?: string
+  spec: RuleSpec
+  /** Card body markdown (business explanation, evidence, notes). */
+  body: string
+}
+
+/** A rule card that failed structural validation (still listed, never run). */
+export interface InvalidRule {
+  slug: string
+  title: string
+  issues: string[]
+}
+
+/** Result of GET /api/dsh-knowledge/rules: one rule set, versioned & validated. */
+export interface RulesResult {
+  kb: string
+  ruleSet: string
+  /** Content hash over the canonical active specs — fixed per run for tracing. */
+  version: string
+  hash: string
+  generatedAt: string
+  statusFilter: string
+  rules: CompiledRule[]
+  invalidRules: InvalidRule[]
 }

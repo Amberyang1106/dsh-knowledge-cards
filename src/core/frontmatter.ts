@@ -7,6 +7,20 @@
  * repaired rather than rejected. The serializer emits the strict canonical
  * form the llm_wiki ingest prompt demands (first line `---`, inline arrays,
  * bare slug lists for related).
+ *
+ * Nested subset (rule cards, type=rules): beyond flat `key: scalar` /
+ * `key: [a, b]`, values may be inline flow maps `{k: v, ...}` and block
+ * lists/maps with two-space indentation:
+ *
+ *   conditions:
+ *     - fact: mspa03_customer_row_count
+ *       operator: gt
+ *       value: 0
+ *   outcome:
+ *     category: WBS_FORMAT
+ *
+ * The extension is additive — flat cards never trigger the new branches and
+ * keep their exact previous behavior.
  * @module dsh-knowledge-cards/core/frontmatter
  */
 
@@ -17,6 +31,13 @@ export interface ParsedFrontmatter {
 }
 
 const OPEN = '---'
+
+/** Frontmatter keys the plugin itself manages on every card write. */
+export const MANAGED_FRONTMATTER_KEYS = ['type', 'title', 'description', 'tags', 'related', 'sources', 'created', 'updated'] as const
+
+export function isManagedFrontmatterKey(key: string): boolean {
+  return (MANAGED_FRONTMATTER_KEYS as readonly string[]).includes(key)
+}
 
 function stripCodeFence(text: string): string {
   // ```yaml\n---\n...\n---\n``` → ---\n...\n---
@@ -44,7 +65,12 @@ function locate(text: string): { block: string; bodyStart: number } | null {
   const cleaned = stripCodeFence(stripFrontmatterKey(text))
   if (cleaned !== text) {
     const inner = locate(cleaned)
-    if (inner !== null) return inner
+    if (inner !== null) {
+      // inner.block is already junk-free; bodyStart is relative to `cleaned`,
+      // so offset it back into the original text.
+      const removed = text.length - cleaned.length
+      return { block: inner.block, bodyStart: inner.bodyStart + removed }
+    }
   }
   // Lenient: the opening fence is missing but the payload starts with a
   // `key: value` line and a closing `---` fence exists (LLM corruption the
@@ -76,26 +102,12 @@ function parseScalar(raw: string): string | number | boolean {
   return value
 }
 
-function parseArray(raw: string): unknown[] {
-  const inner = raw.trim()
-  if (inner.startsWith('[') && inner.endsWith(']')) {
-    const body = inner.slice(1, -1).trim()
-    if (body === '') return []
-    return splitTopLevel(body).map((item) => {
-      const trimmed = item.trim()
-      // Repair `[[a]], [[b]]` → bare `a`, `b` (invalid YAML llm_wiki repairs too).
-      const bare = trimmed.replace(/^\[\[|\]\]$/g, '')
-      return parseScalar(bare)
-    })
-  }
-  return []
-}
-
-/** Split `a, b, "c, d"` respecting quotes (top-level commas only). */
+/** Split a comma list at top level, honoring quotes and nested {} / []. */
 function splitTopLevel(text: string): string[] {
   const parts: string[] = []
   let current = ''
   let quote: string | null = null
+  let depth = 0
   for (const char of text) {
     if (quote !== null) {
       current += char
@@ -103,7 +115,13 @@ function splitTopLevel(text: string): string[] {
     } else if (char === '"' || char === "'") {
       quote = char
       current += char
-    } else if (char === ',') {
+    } else if (char === '{' || char === '[') {
+      depth += 1
+      current += char
+    } else if (char === '}' || char === ']') {
+      depth = Math.max(0, depth - 1)
+      current += char
+    } else if (char === ',' && depth === 0) {
       parts.push(current)
       current = ''
     } else {
@@ -118,21 +136,218 @@ function normalizeKey(key: string): string {
   return key.trim().replace(/^["']|["']$/g, '')
 }
 
-function blockToArray(lines: string[], index: number): { value: unknown[]; next: number } {
-  const items: unknown[] = []
-  let cursor = index
-  while (cursor < lines.length) {
-    const line = lines[cursor]
-    if (/^\s*-\s+/.test(line)) {
-      items.push(parseScalar(line.replace(/^\s*-\s+/, '').trim()))
-      cursor += 1
-    } else if (line.trim() === '-') {
-      cursor += 1
-    } else {
-      break
+/** Parse one flow value token: flow map `{...}`, flow array `[...]`, scalar. */
+function parseFlowValue(raw: string): unknown {
+  const value = raw.trim()
+  if (value.startsWith('{') && value.endsWith('}')) return parseFlowMap(value)
+  if (value.startsWith('[') && value.endsWith(']')) return parseFlowArray(value)
+  return parseScalar(value)
+}
+
+/** Parse `{k: v, nested: {…}, list: [a, b]}` into an object. */
+export function parseFlowMap(raw: string): Record<string, unknown> {
+  const body = raw.trim()
+  const inner = body.startsWith('{') && body.endsWith('}') ? body.slice(1, -1).trim() : body
+  const result: Record<string, unknown> = {}
+  if (inner === '') return result
+  for (const item of splitTopLevel(inner)) {
+    const colon = findTopLevelColon(item)
+    if (colon === -1) continue
+    const key = normalizeKey(item.slice(0, colon))
+    if (key === '') continue
+    result[key] = parseFlowValue(item.slice(colon + 1))
+  }
+  return result
+}
+
+/** Parse `[a, b, {k: v}, [x]]` into an array. */
+export function parseFlowArray(raw: string): unknown[] {
+  const inner = raw.trim()
+  const body = inner.startsWith('[') && inner.endsWith(']') ? inner.slice(1, -1).trim() : inner
+  if (body === '') return []
+  return splitTopLevel(body).map((item) => {
+    const trimmed = item.trim()
+    // Repair `[[a]], [[b]]` → bare `a`, `b` (invalid YAML llm_wiki repairs too).
+    const bare = trimmed.replace(/^\[\[|\]\]$/g, '')
+    return parseFlowValue(bare)
+  })
+}
+
+/** Find the first top-level `:` (outside quotes and nested braces/brackets). */
+function findTopLevelColon(text: string): number {
+  let quote: string | null = null
+  let depth = 0
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (quote !== null) {
+      if (char === quote) quote = null
+    } else if (char === '"' || char === "'") {
+      quote = char
+    } else if (char === '{' || char === '[') {
+      depth += 1
+    } else if (char === '}' || char === ']') {
+      depth = Math.max(0, depth - 1)
+    } else if (char === ':' && depth === 0) {
+      return index
     }
   }
-  return { value: items, next: cursor }
+  return -1
+}
+
+interface Line {
+  indent: number
+  text: string
+}
+
+const KEY_RE = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/
+
+function isKeyLine(line: Line): boolean {
+  return KEY_RE.test(line.text)
+}
+
+function isDashLine(line: Line): boolean {
+  return /^-(\s|$)/.test(line.text)
+}
+
+/** The remainder after `- ` (empty when the dash stands alone). */
+function dashRest(line: Line): string {
+  return line.text.replace(/^-\s*/, '').trim()
+}
+
+function lineIndent(raw: string): number {
+  const leading = raw.match(/^[ \t]*/)?.[0] ?? ''
+  return leading.replace(/\t/g, '  ').length
+}
+
+/**
+ * Block structure parser (recursive descent over indented lines). Supports
+ * maps (key lines at one indent), lists (dash lines at one indent), and
+ * dash-map items whose sibling keys continue at a deeper indent.
+ */
+
+/** Parse `key: value` entries whose lines sit at exactly `indent`. */
+function parseEntries(lines: Line[], start: number, indent: number): { map: Record<string, unknown>; next: number } {
+  const map: Record<string, unknown> = {}
+  let cursor = start
+  while (cursor < lines.length) {
+    const line = lines[cursor]
+    if (line.text.trim() === '') { cursor += 1; continue }
+    if (line.indent < indent) break
+    if (line.indent > indent) { cursor += 1; continue }
+    if (isDashLine(line) || !isKeyLine(line)) { cursor += 1; continue }
+    const match = KEY_RE.exec(line.text)
+    if (match === null) { cursor += 1; continue }
+    const key = normalizeKey(match[1])
+    const rest = match[2].trim()
+    const parsed = parseInlineOrBlock(lines, cursor, indent, rest)
+    map[key] = parsed.value
+    cursor = parsed.next
+  }
+  return { map, next: cursor }
+}
+
+/**
+ * Resolve one entry's value: inline scalar / flow map / flow array when `rest`
+ * is non-empty, otherwise a nested block (list or map) on deeper lines.
+ */
+function parseInlineOrBlock(
+  lines: Line[],
+  idx: number,
+  keyIndent: number,
+  rest: string,
+): { value: unknown; next: number } {
+  if (rest.startsWith('{') && rest.endsWith('}')) return { value: parseFlowMap(rest), next: idx + 1 }
+  if (rest.startsWith('[')) return { value: parseFlowArray(rest), next: idx + 1 }
+  if (rest !== '') return { value: parseScalar(rest), next: idx + 1 }
+  // Empty value: consume a nested block if the next meaningful line is deeper.
+  let cursor = idx + 1
+  while (cursor < lines.length && lines[cursor].text.trim() === '') cursor += 1
+  if (cursor >= lines.length || lines[cursor].indent <= keyIndent) {
+    return { value: [], next: idx + 1 } // legacy: bare `key:` → []
+  }
+  if (isDashLine(lines[cursor])) {
+    const parsed = parseList(lines, cursor, lines[cursor].indent)
+    return { value: parsed.list, next: parsed.next }
+  }
+  const parsed = parseEntries(lines, cursor, lines[cursor].indent)
+  return { value: parsed.map, next: parsed.next }
+}
+
+/** Parse `- item` lines at exactly `indent`. */
+function parseList(lines: Line[], start: number, indent: number): { list: unknown[]; next: number } {
+  const list: unknown[] = []
+  let cursor = start
+  while (cursor < lines.length) {
+    const line = lines[cursor]
+    if (line.text.trim() === '') { cursor += 1; continue }
+    if (line.indent !== indent || !isDashLine(line)) break
+    const rest = dashRest(line)
+    if (rest === '') {
+      // `-` alone → nested block on deeper lines.
+      let inner = cursor + 1
+      while (inner < lines.length && lines[inner].text.trim() === '') inner += 1
+      if (inner < lines.length && lines[inner].indent > indent) {
+        if (isDashLine(lines[inner])) {
+          const nested = parseList(lines, inner, lines[inner].indent)
+          list.push(nested.list)
+          cursor = nested.next
+        } else {
+          const nested = parseEntries(lines, inner, lines[inner].indent)
+          list.push(nested.map)
+          cursor = nested.next
+        }
+      } else {
+        list.push('')
+        cursor += 1
+      }
+      continue
+    }
+    if (rest.startsWith('{') && rest.endsWith('}')) {
+      list.push(parseFlowMap(rest))
+      cursor += 1
+      continue
+    }
+    if (isKeyLine({ indent: line.indent + 1, text: rest })) {
+      // Dash-map item: first key rides the dash line, siblings follow deeper.
+      const object: Record<string, unknown> = {}
+      cursor = parseDashMap(lines, cursor, indent, object, rest)
+      list.push(object)
+      continue
+    }
+    list.push(parseScalar(rest))
+    cursor += 1
+  }
+  return { list, next: cursor }
+}
+
+/** Parse a dash-map item: first key from the dash line's rest, then deeper
+ * sibling keys at their (first-continuation) indent until dedent to the dash. */
+function parseDashMap(
+  lines: Line[],
+  start: number,
+  dashIndent: number,
+  object: Record<string, unknown>,
+  firstRest: string,
+): number {
+  const firstMatch = KEY_RE.exec(firstRest)
+  let cursor = start + 1
+  let firstKey: string | null = null
+  if (firstMatch !== null) {
+    firstKey = normalizeKey(firstMatch[1])
+    const parsed = parseInlineOrBlock(lines, start, dashIndent + 1, firstMatch[2].trim())
+    // Note: start is the dash line; value continuation reads from start+1.
+    object[firstKey] = parsed.value
+    cursor = parsed.next
+  }
+  // Remaining sibling keys: collect from the first deeper key line onward.
+  let probe = cursor
+  while (probe < lines.length && lines[probe].text.trim() === '') probe += 1
+  if (probe < lines.length && lines[probe].indent > dashIndent && isKeyLine(lines[probe])) {
+    const parsed = parseEntries(lines, probe, lines[probe].indent)
+    Object.assign(object, parsed.map)
+    cursor = parsed.next
+  }
+  return cursor
 }
 
 /**
@@ -145,9 +360,9 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
   const block = located.block
   const body = content.slice(located.bodyStart)
 
-  const lines = block.replace(/\r\n/g, '\n').split('\n')
+  const rawLines = block.replace(/\r\n/g, '\n').split('\n')
   // Strip the fences.
-  const first = lines[0]?.trim()
+  const first = rawLines[0]?.trim()
   if (first !== OPEN) {
     // Lenient repair: opening fence missing → treat the junk line as part of
     // the payload only if it looks like a key: value pair.
@@ -155,37 +370,12 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
       return { frontmatter: null, body: content }
     }
   }
-  const payload = lines.filter((line) => line.trim() !== OPEN && line.trim() !== '')
+  const payload = rawLines
+    .filter((line) => line.trim() !== OPEN && line.trim() !== '')
+    .map((line) => ({ indent: lineIndent(line), text: line.trim() }))
 
-  const frontmatter: Record<string, unknown> = {}
-  let cursor = 0
-  while (cursor < payload.length) {
-    const line = payload[cursor]
-    if (/^\s*-\s+/.test(line)) {
-      cursor += 1
-      continue
-    }
-    const match = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(line)
-    if (match === null) {
-      cursor += 1
-      continue
-    }
-    const key = normalizeKey(match[1])
-    const rest = match[2].trim()
-    if (rest === '') {
-      // Block list (or empty).
-      const { value, next } = blockToArray(payload, cursor + 1)
-      frontmatter[key] = next > cursor + 1 ? value : []
-      cursor = next
-    } else if (rest.startsWith('[')) {
-      frontmatter[key] = parseArray(rest)
-      cursor += 1
-    } else {
-      frontmatter[key] = parseScalar(rest)
-      cursor += 1
-    }
-  }
-  return { frontmatter, body }
+  const parsed = parseEntries(payload, 0, 0)
+  return { frontmatter: parsed.map, body }
 }
 
 /** Quote a scalar for YAML output when needed. */
@@ -198,9 +388,91 @@ function quoteValue(value: unknown): string {
   return JSON.stringify(text)
 }
 
-/** Render one frontmatter key with an inline array. */
-function renderArray(values: unknown[]): string {
+/** Render an inline array when every item is a plain scalar. */
+function renderInlineArray(values: unknown[]): string {
   return '[' + values.map((value) => quoteValue(value)).join(', ') + ']'
+}
+
+const KEY_NAME_RE = /^[A-Za-z_][\w-]*$/
+
+function renderKey(key: string): string {
+  return KEY_NAME_RE.test(key) ? key : JSON.stringify(key)
+}
+
+const isEmptyObject = (value: unknown): boolean => typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value as Record<string, unknown>).length === 0
+const isScalarish = (value: unknown): boolean => typeof value !== 'object' || value === null
+
+const pad = (level: number): string => '  '.repeat(Math.max(0, level))
+
+/** Inline rendering for scalars / scalar arrays / empty objects (single line). */
+function inlineValue(value: unknown): string | null {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return quoteValue(value)
+  if (Array.isArray(value)) return value.every(isScalarish) ? renderInlineArray(value) : null
+  if (isEmptyObject(value)) return '{}'
+  return null
+}
+
+/** Emit an object item as `- key: value` with sibling keys one level deeper. */
+function dashMapLines(obj: Record<string, unknown>, dashLevel: number): string[] {
+  const entries = Object.entries(obj)
+  const lines: string[] = []
+  entries.forEach(([key, value], index) => {
+    if (value === undefined || value === null) return
+    const keyText = renderKey(key)
+    if (index === 0) {
+      const inline = inlineValue(value)
+      if (inline !== null) {
+        lines.push(`${pad(dashLevel)}- ${keyText}: ${inline}`)
+      } else if (Array.isArray(value)) {
+        lines.push(`${pad(dashLevel)}- ${keyText}:`)
+        lines.push(...arrayBlockLines(value, dashLevel + 1))
+      } else {
+        lines.push(`${pad(dashLevel)}- ${keyText}:`)
+        lines.push(...mapBlockLines(value as Record<string, unknown>, dashLevel + 1))
+      }
+    } else {
+      lines.push(...keyLines(keyText, value, dashLevel + 1))
+    }
+  })
+  return lines
+}
+
+/** Emit the items of an array whose entries are objects / scalars. */
+function arrayBlockLines(value: unknown[], itemLevel: number): string[] {
+  const lines: string[] = []
+  for (const item of value) {
+    if (item === null || typeof item !== 'object') {
+      lines.push(`${pad(itemLevel)}- ${quoteValue(item)}`)
+    } else if (Array.isArray(item)) {
+      const inline = renderInlineArray(item)
+      lines.push(`${pad(itemLevel)}- ${inline}`)
+    } else if (isEmptyObject(item)) {
+      lines.push(`${pad(itemLevel)}- {}`)
+    } else {
+      lines.push(...dashMapLines(item as Record<string, unknown>, itemLevel))
+    }
+  }
+  return lines
+}
+
+/** Emit map entries at one level (each `key: value`, value recursing deeper). */
+function mapBlockLines(map: Record<string, unknown>, level: number): string[] {
+  const lines: string[] = []
+  for (const [key, value] of Object.entries(map)) {
+    if (value === undefined || value === null) continue
+    lines.push(...keyLines(renderKey(key), value, level))
+  }
+  return lines
+}
+
+/** Emit one `key: value` line at `level` (+ nested children when needed). */
+function keyLines(keyText: string, value: unknown, level: number): string[] {
+  const inline = inlineValue(value)
+  if (inline !== null) return [`${pad(level)}${keyText}: ${inline}`]
+  if (Array.isArray(value)) {
+    return [`${pad(level)}${keyText}:`, ...arrayBlockLines(value, level + 1)]
+  }
+  return [`${pad(level)}${keyText}:`, ...mapBlockLines(value as Record<string, unknown>, level + 1)]
 }
 
 /**
@@ -210,16 +482,17 @@ function renderArray(values: unknown[]): string {
 export function serializePage(frontmatter: Record<string, unknown>, body: string): string {
   const lines: string[] = [OPEN]
   for (const [key, value] of Object.entries(frontmatter)) {
-    if (Array.isArray(value)) {
-      if (value.length === 0) {
-        lines.push(`${key}: []`)
-      } else {
-        lines.push(`${key}: ${renderArray(value)}`)
-      }
-    } else if (value === undefined || value === null || value === '') {
-      lines.push(`${key}: ""`)
+    if (value === undefined || value === null) continue
+    const keyText = renderKey(key)
+    const inline = inlineValue(value)
+    if (inline !== null) {
+      lines.push(`${keyText}: ${value === '' ? '""' : inline}`)
+    } else if (Array.isArray(value)) {
+      lines.push(`${keyText}:`)
+      lines.push(...arrayBlockLines(value, 1))
     } else {
-      lines.push(`${key}: ${quoteValue(value)}`)
+      lines.push(`${keyText}:`)
+      lines.push(...mapBlockLines(value as Record<string, unknown>, 1))
     }
   }
   lines.push(OPEN)
@@ -237,4 +510,31 @@ export function slugFromTitle(title: string): string {
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
   return slug === '' ? 'untitled' : slug
+}
+
+/**
+ * Parse a bare YAML payload (no `---` fences, e.g. pasted by the rule editor)
+ * into a frontmatter object. Returns null when no `key: value` is found.
+ */
+export function parseYamlPayload(payload: string): Record<string, unknown> | null {
+  const parsed = parseFrontmatter(`${OPEN}\n${payload.replace(/\r\n/g, '\n')}\n${OPEN}\n`)
+  return parsed.frontmatter
+}
+
+/**
+ * Canonical YAML text of a frontmatter object WITHOUT the enclosing `---`
+ * fences — used by the panel rule editor as editable text.
+ */
+export function renderYamlPayload(frontmatter: Record<string, unknown>): string {
+  const serialized = serializePage(frontmatter, '')
+  const lines = serialized.split('\n')
+  if (lines[0] === OPEN) lines.shift()
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+  if (lines.length > 0 && lines[lines.length - 1] === OPEN) lines.pop()
+  return lines.join('\n').replace(/\n+$/, '')
+}
+
+/** Whether a parsed frontmatter object contains any nested structure. */
+export function hasNestedFrontmatter(frontmatter: Record<string, unknown>): boolean {
+  return Object.values(frontmatter).some((value) => typeof value === 'object' && value !== null)
 }
