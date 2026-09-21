@@ -786,6 +786,13 @@ export interface CardEditInput {
    * created is preserved, updated is re-stamped on change.
    */
   frontmatterYaml?: string
+  /**
+   * Structured replacement of the NON-MANAGED frontmatter keys — the field-card
+   * editing path (type=field), where the panel posts a parsed object instead of
+   * hand-written YAML. Managed keys (type/title/description/tags/related/
+   * sources/created/updated) keep coming from their own input fields.
+   */
+  frontmatter?: Record<string, unknown>
 }
 
 /**
@@ -829,6 +836,33 @@ export async function editCard(kb: KbConfig, slug: string, input: CardEditInput)
     }
     for (const key of Object.keys(fm)) delete fm[key]
     Object.assign(fm, fresh)
+  }
+
+  // Structured non-managed replacement (field cards): the panel posts a parsed
+  // object; managed keys keep their own input fields, every OTHER key is
+  // replaced by what the form sent (removals included).
+  let structuredFmReplaced = false
+  if (input.frontmatter !== undefined) {
+    const next: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(input.frontmatter)) {
+      if (isManagedFrontmatterKey(key)) continue
+      if (value === undefined || value === null) continue
+      if (Array.isArray(value) && value.length === 0) continue
+      if (typeof value === 'string' && value.trim() === '') continue
+      next[key] = value
+    }
+    const current: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(fm)) {
+      if (!isManagedFrontmatterKey(key)) current[key] = value
+    }
+    if (JSON.stringify(current) !== JSON.stringify(next)) {
+      changed.push('字段元数据')
+      structuredFmReplaced = true
+    }
+    for (const key of Object.keys(fm)) {
+      if (!isManagedFrontmatterKey(key)) delete fm[key]
+    }
+    Object.assign(fm, next)
   }
 
   if (title !== undefined && title !== '' && title !== existing.title) {
@@ -880,6 +914,7 @@ export async function editCard(kb: KbConfig, slug: string, input: CardEditInput)
     // and a body change summary (line counts + first added snippet).
     const notes: string[] = []
     if (fullFmReplaced) notes.push('frontmatter: 规则配置已更新（YAML 全量替换）')
+    if (structuredFmReplaced) notes.push('frontmatter: 字段元数据已更新（结构化表单）')
     if (title !== undefined && title !== '' && title !== existing.title) {
       notes.push(scalarChange('标题', existing.title, title))
     }

@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import type { Card, CardMeta, KbSummary, LintIssue, SourceStatus } from '../core/types.ts'
 import type { PanelController } from './controller.ts'
-import { t } from './locales.ts'
+import { t, type KnowledgeCardsKey } from './locales.ts'
 import css from './panel.module.css'
 
 interface ApiEnvelope<T> {
@@ -58,54 +58,247 @@ const TYPE_FILTERS = ['all', 'entity', 'concept', 'source', 'query', 'comparison
 /** Types offered by the manual create form (overview is auto-maintained). */
 const CREATE_TYPES = ['concept', 'entity', 'source', 'query', 'comparison', 'synthesis', 'rules', 'field'] as const
 
-/** Types whose whole frontmatter is edited as one canonical YAML payload. */
-const YAML_EDITOR_TYPES: readonly string[] = ['rules', 'field']
+/** Types whose whole frontmatter is edited as one canonical YAML payload.
+ * (`field` uses the dedicated 5-section structured form below instead.) */
+const YAML_EDITOR_TYPES: readonly string[] = ['rules']
 
-/** Starter template for a field card (type=field) — structured metadata in
- * the frontmatter (identity / logic / implementation / lineage / governance),
- * narrative sections go in the body. Minimal first version: fill the key
- * facts, let the agent complete the rest. */
-const FIELD_YAML_TEMPLATE = [
-  'type: field',
-  'title: ', // 必填：业务语义字段名，如 Premium Mix %
-  'description: 一句话业务定义',
-  '',
-  '# --- Identity ---',
-  'field_id: field.', // 稳定 id，如 field.premium_mix_pct
-  'canonical_name: ', // 规范名（snake_case）
-  'aliases: []', // 别名：不同系统/报表里的叫法
-  'field_kind: measure', // dimension|measure|calculated_field|flag|key|mapping|date|attribute|parameter',
-  'data_type: percentage', // string|amount|percentage|integer|ratio|date|boolean',
-  'status: draft', // draft|active|deprecated|retired
-  'domain: Finance',
-  'workstream: Management Reporting',
-  'subject_area: ',
-  '',
-  '# --- Logic ---',
-  'aggregation: non-additive', // additive|semi-additive|non-additive
-  'unit: ', // USD / USD M / % / ...
-  'source_table: ',
-  'source_field: ',
-  '',
-  '# --- Relations（slug 或名称，支撑 Impact Analysis）---',
-  'depends_on: []',
-  'used_by: []',
-  'implemented_in: []',
-  'governed_by: []',
-  '',
-  '# --- Governance ---',
-  'business_owner: ',
-  'technical_owner: ',
-  'effective_from: ',
-  'last_reviewed: ',
-  'review_status: draft', // draft|inferred|confirmed|disputed|deprecated
-  'evidence_level: ', // source_code|business_document|business_confirmation|inferred
-  '',
-  '# --- 常规卡片字段 ---',
-  'tags: []',
-  'related: []',
-  'sources: []',
-].join('\n')
+// ---------------------------------------------------------------------------
+// field card structured form (type=field): five sections over the frontmatter
+// metadata — Overview / Logic / Implementation / Lineage & Impact / Governance.
+// Narrative sections (business definition, calculation, scope, validation …)
+// stay in the card body and are completed by the agent.
+// ---------------------------------------------------------------------------
+
+interface FieldDraft {
+  title: string
+  description: string
+  aliases: string
+  fieldId: string
+  canonicalName: string
+  fieldKind: string
+  dataType: string
+  status: string
+  domain: string
+  workstream: string
+  subjectArea: string
+  aggregation: string
+  unit: string
+  sourceTable: string
+  sourceField: string
+  implementedIn: string
+  dependsOn: string
+  usedBy: string
+  governedBy: string
+  businessOwner: string
+  technicalOwner: string
+  effectiveFrom: string
+  lastReviewed: string
+  reviewStatus: string
+  evidenceLevel: string
+  tags: string
+  sources: string
+}
+
+const FIELD_KIND_OPTIONS = ['measure', 'dimension', 'calculated_field', 'flag', 'key', 'mapping', 'date', 'attribute', 'parameter'] as const
+const FIELD_DATA_TYPE_OPTIONS = ['amount', 'percentage', 'ratio', 'integer', 'string', 'date', 'boolean'] as const
+const FIELD_AGGREGATION_OPTIONS = ['additive', 'semi-additive', 'non-additive'] as const
+const FIELD_STATUS_OPTIONS = ['draft', 'active', 'deprecated', 'retired'] as const
+const FIELD_REVIEW_OPTIONS = ['draft', 'inferred', 'confirmed', 'disputed', 'deprecated'] as const
+const FIELD_EVIDENCE_OPTIONS = ['source_code', 'business_document', 'business_confirmation', 'inferred'] as const
+
+function emptyFieldDraft(): FieldDraft {
+  return {
+    title: '', description: '', aliases: '', fieldId: '', canonicalName: '',
+    fieldKind: 'measure', dataType: 'amount', status: 'draft',
+    domain: 'Finance', workstream: '', subjectArea: '',
+    aggregation: 'non-additive', unit: '', sourceTable: '', sourceField: '',
+    implementedIn: '', dependsOn: '', usedBy: '', governedBy: '',
+    businessOwner: '', technicalOwner: '', effectiveFrom: '', lastReviewed: '',
+    reviewStatus: 'draft', evidenceLevel: '', tags: '', sources: '',
+  }
+}
+
+/** Split a list input on newlines or commas. */
+const splitFieldList = (text: string): string[] =>
+  text.split(/[\n,]/).map((item) => item.trim()).filter((item) => item !== '')
+
+/** Render a frontmatter value back into a list-editor string. */
+const joinFieldList = (value: unknown): string => {
+  if (Array.isArray(value)) return value.map((item) => String(item)).join('\n')
+  if (typeof value === 'string') return value
+  return ''
+}
+
+/** Build the non-managed frontmatter object from the structured draft. */
+function buildFieldFrontmatter(draft: FieldDraft): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const put = (key: string, value: string): void => {
+    const text = value.trim()
+    if (text !== '') out[key] = text
+  }
+  const putList = (key: string, value: string): void => {
+    const items = splitFieldList(value)
+    if (items.length > 0) out[key] = items
+  }
+  put('field_id', draft.fieldId)
+  put('canonical_name', draft.canonicalName)
+  putList('aliases', draft.aliases)
+  put('field_kind', draft.fieldKind)
+  put('data_type', draft.dataType)
+  put('status', draft.status)
+  put('domain', draft.domain)
+  put('workstream', draft.workstream)
+  put('subject_area', draft.subjectArea)
+  put('aggregation', draft.aggregation)
+  put('unit', draft.unit)
+  put('source_table', draft.sourceTable)
+  put('source_field', draft.sourceField)
+  putList('implemented_in', draft.implementedIn)
+  putList('depends_on', draft.dependsOn)
+  putList('used_by', draft.usedBy)
+  putList('governed_by', draft.governedBy)
+  put('business_owner', draft.businessOwner)
+  put('technical_owner', draft.technicalOwner)
+  put('effective_from', draft.effectiveFrom)
+  put('last_reviewed', draft.lastReviewed)
+  put('review_status', draft.reviewStatus)
+  put('evidence_level', draft.evidenceLevel)
+  return out
+}
+
+/** Prefill the structured draft from a card + its parsed frontmatter. */
+function fieldDraftFrom(card: CardMeta, fm: Record<string, unknown>): FieldDraft {
+  const text = (value: unknown): string => (typeof value === 'string' ? value : value === undefined || value === null ? '' : String(value))
+  const base = emptyFieldDraft()
+  return {
+    ...base,
+    title: card.title,
+    description: card.description ?? '',
+    aliases: joinFieldList(fm.aliases),
+    fieldId: text(fm.field_id),
+    canonicalName: text(fm.canonical_name),
+    fieldKind: text(fm.field_kind) || base.fieldKind,
+    dataType: text(fm.data_type) || base.dataType,
+    status: text(fm.status) || base.status,
+    domain: text(fm.domain) || base.domain,
+    workstream: text(fm.workstream),
+    subjectArea: text(fm.subject_area),
+    aggregation: text(fm.aggregation) || base.aggregation,
+    unit: text(fm.unit),
+    sourceTable: text(fm.source_table),
+    sourceField: text(fm.source_field),
+    implementedIn: joinFieldList(fm.implemented_in),
+    dependsOn: joinFieldList(fm.depends_on),
+    usedBy: joinFieldList(fm.used_by),
+    governedBy: joinFieldList(fm.governed_by),
+    businessOwner: text(fm.business_owner),
+    technicalOwner: text(fm.technical_owner),
+    effectiveFrom: text(fm.effective_from),
+    lastReviewed: text(fm.last_reviewed),
+    reviewStatus: text(fm.review_status) || base.reviewStatus,
+    evidenceLevel: text(fm.evidence_level),
+    tags: card.tags.join(', '),
+    sources: card.sources.join(', '),
+  }
+}
+
+interface FieldControlSpec {
+  key: keyof FieldDraft
+  labelKey: KnowledgeCardsKey
+  kind: 'text' | 'list' | 'select'
+  options?: readonly string[]
+}
+
+interface FieldSectionSpec {
+  titleKey: KnowledgeCardsKey
+  open?: boolean
+  controls: FieldControlSpec[]
+}
+
+const FIELD_SECTIONS: FieldSectionSpec[] = [
+  {
+    titleKey: 'field.section.overview',
+    open: true,
+    controls: [
+      { key: 'title', labelKey: 'card.title', kind: 'text' },
+      { key: 'description', labelKey: 'card.desc', kind: 'text' },
+      { key: 'aliases', labelKey: 'field.aliases', kind: 'text' },
+      { key: 'fieldId', labelKey: 'field.id', kind: 'text' },
+      { key: 'canonicalName', labelKey: 'field.canonical', kind: 'text' },
+      { key: 'fieldKind', labelKey: 'field.kind', kind: 'select', options: FIELD_KIND_OPTIONS },
+      { key: 'dataType', labelKey: 'field.dataType', kind: 'select', options: FIELD_DATA_TYPE_OPTIONS },
+      { key: 'status', labelKey: 'field.status', kind: 'select', options: FIELD_STATUS_OPTIONS },
+      { key: 'domain', labelKey: 'field.domain', kind: 'text' },
+      { key: 'workstream', labelKey: 'field.workstream', kind: 'text' },
+      { key: 'subjectArea', labelKey: 'field.subjectArea', kind: 'text' },
+    ],
+  },
+  {
+    titleKey: 'field.section.logic',
+    open: true,
+    controls: [
+      { key: 'aggregation', labelKey: 'field.aggregation', kind: 'select', options: FIELD_AGGREGATION_OPTIONS },
+      { key: 'unit', labelKey: 'field.unit', kind: 'text' },
+      { key: 'sourceTable', labelKey: 'field.sourceTable', kind: 'text' },
+      { key: 'sourceField', labelKey: 'field.sourceField', kind: 'text' },
+    ],
+  },
+  {
+    titleKey: 'field.section.implementation',
+    controls: [{ key: 'implementedIn', labelKey: 'field.implementedIn', kind: 'list' }],
+  },
+  {
+    titleKey: 'field.section.lineage',
+    controls: [
+      { key: 'dependsOn', labelKey: 'field.dependsOn', kind: 'list' },
+      { key: 'usedBy', labelKey: 'field.usedBy', kind: 'list' },
+      { key: 'governedBy', labelKey: 'field.governedBy', kind: 'list' },
+    ],
+  },
+  {
+    titleKey: 'field.section.governance',
+    controls: [
+      { key: 'businessOwner', labelKey: 'field.businessOwner', kind: 'text' },
+      { key: 'technicalOwner', labelKey: 'field.technicalOwner', kind: 'text' },
+      { key: 'effectiveFrom', labelKey: 'field.effectiveFrom', kind: 'text' },
+      { key: 'lastReviewed', labelKey: 'field.lastReviewed', kind: 'text' },
+      { key: 'reviewStatus', labelKey: 'field.reviewStatus', kind: 'select', options: FIELD_REVIEW_OPTIONS },
+      { key: 'evidenceLevel', labelKey: 'field.evidenceLevel', kind: 'select', options: FIELD_EVIDENCE_OPTIONS },
+      { key: 'tags', labelKey: 'form.tags', kind: 'text' },
+      { key: 'sources', labelKey: 'form.sources', kind: 'text' },
+    ],
+  },
+]
+
+/** Five-section structured editor for a field card's metadata. */
+function FieldForm({ draft, onChange }: { draft: FieldDraft; onChange: (next: FieldDraft) => void }): ReactElement {
+  const set = (key: keyof FieldDraft, value: string): void => onChange({ ...draft, [key]: value })
+  return (
+    <div>
+      <p className={css.note}>{t(undefined, 'field.formHint')}</p>
+      {FIELD_SECTIONS.map((section) => (
+        <details key={section.titleKey} className={css.formSection} open={section.open}>
+          <summary className={css.formSummary}>{t(undefined, section.titleKey)}</summary>
+          <div className={css.formBody}>
+            {section.controls.map((control) => (
+              <label key={control.key} className={css.editLabel}>{t(undefined, control.labelKey)}
+                {control.kind === 'select' ? (
+                  <select className={css.select} value={draft[control.key]} onChange={(event) => set(control.key, event.target.value)}>
+                    {(control.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                ) : control.kind === 'list' ? (
+                  <textarea className={css.editorTextarea} rows={3} value={draft[control.key]} placeholder={t(undefined, 'field.lineHint')} onChange={(event) => set(control.key, event.target.value)} />
+                ) : (
+                  <input className={css.input} value={draft[control.key]} onChange={(event) => set(control.key, event.target.value)} />
+                )}
+              </label>
+            ))}
+          </div>
+        </details>
+      ))}
+    </div>
+  )
+}
 
 /** Starter template for a rule card (type=rules) — canonical YAML frontmatter. */
 const RULE_YAML_TEMPLATE = [
@@ -235,11 +428,14 @@ function CardsTab({
   const [draftBody, setDraftBody] = useState('')
   // Rule cards (type=rules) are authored as one canonical YAML frontmatter.
   const [draftYaml, setDraftYaml] = useState('')
+  // Field cards (type=field) are authored through the 5-section form.
+  const [fieldDraft, setFieldDraft] = useState<FieldDraft>(emptyFieldDraft)
   const [savingDraft, setSavingDraft] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [createdNote, setCreatedNote] = useState<string | null>(null)
 
   const isYamlDraft = YAML_EDITOR_TYPES.includes(draftType)
+  const isFieldDraft = draftType === 'field'
 
   const openCreate = (): void => {
     setDraftType('concept')
@@ -250,6 +446,7 @@ function CardsTab({
     setDraftSources('')
     setDraftBody('')
     setDraftYaml('')
+    setFieldDraft(emptyFieldDraft())
     setCreateError(null)
     setCreatedNote(null)
     setCreating(true)
@@ -257,32 +454,45 @@ function CardsTab({
 
   const switchDraftType = (type: string): void => {
     setDraftType(type)
-    if (draftYaml.trim() === '') {
-      if (type === 'rules') setDraftYaml(RULE_YAML_TEMPLATE)
-      else if (type === 'field') setDraftYaml(FIELD_YAML_TEMPLATE)
-    }
+    if (type === 'rules' && draftYaml.trim() === '') setDraftYaml(RULE_YAML_TEMPLATE)
+    if (type === 'field') setFieldDraft(emptyFieldDraft())
   }
 
+  const canSaveDraft = isFieldDraft
+    ? fieldDraft.title.trim() !== ''
+    : isYamlDraft ? draftYaml.trim() !== '' : draftTitle.trim() !== ''
+
   const saveCreate = async (): Promise<void> => {
-    if (isYamlDraft ? draftYaml.trim() === '' : draftTitle.trim() === '') return
+    if (!canSaveDraft) return
     setSavingDraft(true)
     setCreateError(null)
     try {
       const data = await api<{ result: { card: CardMeta } }>('/api/dsh-knowledge/card/create', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: isYamlDraft
-          ? JSON.stringify({ kb: kbId, type: draftType, frontmatterYaml: draftYaml, body: draftBody })
-          : JSON.stringify({
+        body: isFieldDraft
+          ? JSON.stringify({
               kb: kbId,
-              type: draftType,
-              title: draftTitle.trim(),
-              description: draftDesc.trim(),
-              tags: draftTags.split(',').map((tag) => tag.trim()).filter((tag) => tag !== ''),
-              related: draftRelated.split(',').map((item) => item.trim()).filter((item) => item !== ''),
-              sources: draftSources.split(',').map((item) => item.trim()).filter((item) => item !== ''),
+              type: 'field',
+              title: fieldDraft.title.trim(),
+              description: fieldDraft.description.trim(),
+              tags: splitFieldList(fieldDraft.tags),
+              sources: splitFieldList(fieldDraft.sources),
+              frontmatter: buildFieldFrontmatter(fieldDraft),
               body: draftBody,
-            }),
+            })
+          : isYamlDraft
+            ? JSON.stringify({ kb: kbId, type: draftType, frontmatterYaml: draftYaml, body: draftBody })
+            : JSON.stringify({
+                kb: kbId,
+                type: draftType,
+                title: draftTitle.trim(),
+                description: draftDesc.trim(),
+                tags: draftTags.split(',').map((tag) => tag.trim()).filter((tag) => tag !== ''),
+                related: draftRelated.split(',').map((item) => item.trim()).filter((item) => item !== ''),
+                sources: draftSources.split(',').map((item) => item.trim()).filter((item) => item !== ''),
+                body: draftBody,
+              }),
       })
       setCreating(false)
       setCreatedNote(t(undefined, 'create.created', { title: data.result.card.title }))
@@ -309,10 +519,18 @@ function CardsTab({
               {CREATE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
             </select>
           </label>
-          {isYamlDraft ? (
+          {isFieldDraft ? (
             <>
-              <p className={css.note}>{draftType === 'field' ? t(undefined, 'create.fieldHint') : t(undefined, 'create.ruleHint')}</p>
-              <label className={css.editLabel}>{draftType === 'field' ? t(undefined, 'create.fieldYaml') : t(undefined, 'create.ruleYaml')}
+              <p className={css.note}>{t(undefined, 'create.fieldHint')}</p>
+              <FieldForm draft={fieldDraft} onChange={setFieldDraft} />
+              <label className={css.editLabel}>{t(undefined, 'card.body')}
+                <textarea className={css.editorTextarea} rows={10} value={draftBody} placeholder="业务定义 / 计算逻辑 / 口径条件 / 血缘 / 校验与例外（Markdown，[[wikilink]] 互链）" onChange={(event) => setDraftBody(event.target.value)} />
+              </label>
+            </>
+          ) : isYamlDraft ? (
+            <>
+              <p className={css.note}>{t(undefined, 'create.ruleHint')}</p>
+              <label className={css.editLabel}>{t(undefined, 'create.ruleYaml')}
                 <textarea
                   className={css.editorTextarea}
                   rows={22}
@@ -348,7 +566,7 @@ function CardsTab({
             </>
           )}
           <div className={css.editActions}>
-            <button className={css.run} disabled={savingDraft || (isYamlDraft ? draftYaml.trim() === '' : draftTitle.trim() === '')} onClick={() => void saveCreate()}>
+            <button className={css.run} disabled={savingDraft || !canSaveDraft} onClick={() => void saveCreate()}>
               {savingDraft ? '…' : t(undefined, 'create.save')}
             </button>
             <button className={css.runSmall} onClick={() => setCreating(false)}>{t(undefined, 'card.cancel')}</button>
@@ -415,6 +633,7 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
   onDeleted: () => void
 }): ReactElement {
   const [card, setCard] = useState<Card | null>(null)
+  const [cardFm, setCardFm] = useState<Record<string, unknown>>({})
   const [editing, setEditing] = useState(false)
   const [editTitle, setEditTitle] = useState('')
   const [editDesc, setEditDesc] = useState('')
@@ -422,6 +641,8 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
   const [editBody, setEditBody] = useState('')
   // Rule cards (type=rules) edit their whole frontmatter as one YAML payload.
   const [editYaml, setEditYaml] = useState('')
+  // Field cards (type=field) edit metadata through the 5-section form.
+  const [editField, setEditField] = useState<FieldDraft>(emptyFieldDraft)
   const [saving, setSaving] = useState(false)
   const [savedNote, setSavedNote] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -430,8 +651,8 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
   useEffect(() => {
     setCard(null)
     setEditing(false)
-    api<{ card: Card }>(`/api/dsh-knowledge/card${query({ kb: kbId, slug })}`)
-      .then((data) => { setCard(data.card); setError(null) })
+    api<{ card: Card; frontmatter?: Record<string, unknown> }>(`/api/dsh-knowledge/card${query({ kb: kbId, slug })}`)
+      .then((data) => { setCard(data.card); setCardFm(data.frontmatter ?? {}); setError(null) })
       .catch((err) => setError(String((err as Error).message ?? err)))
   }, [kbId, slug])
 
@@ -442,6 +663,7 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
     setEditTags(card.tags.join(', '))
     setEditBody(card.body)
     setEditYaml(frontmatterPayloadOf(card.raw))
+    if (card.type === 'field') setEditField(fieldDraftFrom(card, cardFm))
     setSavedNote(null)
     setEditing(true)
   }
@@ -451,17 +673,29 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
     setSaving(true)
     setError(null)
     try {
+      const useFieldForm = card.type === 'field'
       const useYamlEditor = YAML_EDITOR_TYPES.includes(card.type)
-      const payload = useYamlEditor
-        ? JSON.stringify({ kb: kbId, slug: card.slug, frontmatterYaml: editYaml, body: editBody })
-        : JSON.stringify({
+      const payload = useFieldForm
+        ? JSON.stringify({
             kb: kbId,
             slug: card.slug,
-            title: editTitle,
-            description: editDesc,
-            tags: editTags.split(',').map((tag) => tag.trim()).filter((tag) => tag !== ''),
+            title: editField.title.trim() || card.title,
+            description: editField.description.trim(),
+            tags: splitFieldList(editField.tags),
+            sources: splitFieldList(editField.sources),
+            frontmatter: buildFieldFrontmatter(editField),
             body: editBody,
           })
+        : useYamlEditor
+          ? JSON.stringify({ kb: kbId, slug: card.slug, frontmatterYaml: editYaml, body: editBody })
+          : JSON.stringify({
+              kb: kbId,
+              slug: card.slug,
+              title: editTitle,
+              description: editDesc,
+              tags: editTags.split(',').map((tag) => tag.trim()).filter((tag) => tag !== ''),
+              body: editBody,
+            })
       const data = await api<{ result: { card: Card; changed: string[] } }>('/api/dsh-knowledge/card/edit', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -513,11 +747,15 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
         <h2 className={css.detailTitle}>{t(undefined, 'edit.title')}</h2>
         {savedNote !== null && <div className={css.lintResult}>{savedNote}</div>}
         <div className={css.editForm}>
-          {YAML_EDITOR_TYPES.includes(card.type) ? (
+          {card.type === 'field' ? (
             <>
-              <p className={css.note}>{card.type === 'field' ? t(undefined, 'create.fieldHint') : t(undefined, 'create.ruleHint')}
-              </p>
-              <label className={css.editLabel}>{card.type === 'field' ? t(undefined, 'create.fieldYaml') : t(undefined, 'create.ruleYaml')}
+              <p className={css.note}>{t(undefined, 'create.fieldHint')}</p>
+              <FieldForm draft={editField} onChange={setEditField} />
+            </>
+          ) : YAML_EDITOR_TYPES.includes(card.type) ? (
+            <>
+              <p className={css.note}>{t(undefined, 'create.ruleHint')}</p>
+              <label className={css.editLabel}>{t(undefined, 'create.ruleYaml')}
                 <textarea
                   className={css.editorTextarea}
                   rows={22}
@@ -541,7 +779,7 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
             </>
           )}
           <label className={css.editLabel}>{t(undefined, 'card.body')}
-            <textarea className={css.editorTextarea} rows={YAML_EDITOR_TYPES.includes(card.type) ? 6 : 14} value={editBody} onChange={(event) => setEditBody(event.target.value)} />
+            <textarea className={css.editorTextarea} rows={card.type === 'field' ? 10 : YAML_EDITOR_TYPES.includes(card.type) ? 6 : 14} value={editBody} onChange={(event) => setEditBody(event.target.value)} />
           </label>
           <div className={css.editActions}>
             <button className={css.run} disabled={saving} onClick={() => void saveEdit()}>{saving ? '…' : t(undefined, 'edit.save')}</button>

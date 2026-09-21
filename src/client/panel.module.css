@@ -703,6 +703,36 @@ html[data-dsh-knowledge-active] .view {
   resize: vertical;
 }
 
+/* --- field card structured form (5 collapsible sections) --- */
+
+.formSection {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  margin-bottom: 8px;
+}
+
+.formSummary {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  user-select: none;
+}
+
+.formSummary:hover {
+  background: var(--dsw-alias-bg-layer-2);
+  border-radius: 8px;
+}
+
+.formBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 12px 12px;
+}
+
 /* --- log board --- */
 
 .logList {

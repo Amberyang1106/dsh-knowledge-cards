@@ -493,6 +493,80 @@ describe('knowledge routes over HTTP', () => {
     expect((detail.data.card as { type: string }).type).toBe('rules')
   })
 
+  it('creates and edits a field card through structured frontmatter (5-section form path)', async () => {
+    const created = await jsonRequest(port, 'POST', '/api/dsh-knowledge/kbs', { name: '字段测试库' })
+    const fkbId = (created.data.kb as { id: string }).id
+
+    const createdCard = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/create', {
+      kb: fkbId,
+      type: 'field',
+      title: 'Premium Mix %',
+      description: 'Premium 收入占 PC 收入比例（Non-additive measure）',
+      tags: ['premium', 'measure'],
+      sources: [],
+      frontmatter: {
+        field_id: 'field.premium_mix_pct',
+        canonical_name: 'premium_mix_pct',
+        aliases: ['Premium Mix', 'premium_mix'],
+        field_kind: 'measure',
+        data_type: 'percentage',
+        aggregation: 'non-additive',
+        unit: '%',
+        status: 'active',
+        review_status: 'confirmed',
+        evidence_level: 'business_confirmation',
+        source_table: 'magellanedw.cam_fi.fact_fin_qbr_por_consolidated_data_set_w_qtd_metric_view',
+        source_field: 'ttl_rev_amt',
+        depends_on: ['Premium-Flag'],
+        used_by: ['QBR', 'AI Navigator'],
+      },
+      body: '业务定义与计算逻辑见正文。',
+    })
+    expect(createdCard.data.ok).toBe(true)
+    const slug = (createdCard.data.result as { card: { slug: string; type: string } }).card.slug
+    expect((createdCard.data.result as { created: string[] }).created[0]).toContain('fields/')
+
+    // detail hands back the parsed frontmatter so structured editors can prefill
+    const detail = await jsonRequest(port, 'GET', `/api/dsh-knowledge/card?kb=${encodeURIComponent(fkbId)}&slug=${encodeURIComponent(slug)}`)
+    const fm = detail.data.frontmatter as Record<string, unknown>
+    expect(fm.field_kind).toBe('measure')
+    expect(fm.aggregation).toBe('non-additive')
+    expect(fm.aliases).toEqual(['Premium Mix', 'premium_mix'])
+    expect(fm.depends_on).toEqual(['Premium-Flag'])
+    expect(fm.used_by).toEqual(['QBR', 'AI Navigator'])
+    expect((detail.data.card as { tags: string[] }).tags).toEqual(['premium', 'measure'])
+
+    // structured edit replaces the non-managed metadata wholesale (removals included)
+    const edited = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/edit', {
+      kb: fkbId,
+      slug,
+      title: 'Premium Mix %',
+      description: '更新后的定义',
+      tags: ['premium'],
+      sources: [],
+      frontmatter: {
+        field_id: 'field.premium_mix_pct',
+        field_kind: 'measure',
+        review_status: 'confirmed',
+        depends_on: ['Premium-Flag', 'Premium-Revenue'],
+      },
+      body: '业务定义与计算逻辑见正文。',
+    })
+    expect(edited.data.ok).toBe(true)
+    expect((edited.data.result as { changed: string[] }).changed).toContain('字段元数据')
+
+    const after = await jsonRequest(port, 'GET', `/api/dsh-knowledge/card?kb=${encodeURIComponent(fkbId)}&slug=${encodeURIComponent(slug)}`)
+    const fm2 = after.data.frontmatter as Record<string, unknown>
+    expect(fm2.depends_on).toEqual(['Premium-Flag', 'Premium-Revenue'])
+    expect(fm2.used_by).toBeUndefined()
+    expect(fm2.aggregation).toBeUndefined()
+    expect((after.data.card as { description?: string }).description).toBe('更新后的定义')
+
+    // the edit is visible on the 看板 with its own note
+    const log = await jsonRequest(port, 'GET', `/api/dsh-knowledge/log?kb=${encodeURIComponent(fkbId)}&action=edit`)
+    expect((log.data.entries as Array<{ notes: string[] }>).some((entry) => entry.notes.some((note) => note.includes('字段元数据')))).toBe(true)
+  })
+
   it('deletes a knowledge base to the trash and restores it with its review queue', async () => {
     // seed a review that should follow the KB into the trash
     await jsonRequest(port, 'POST', '/api/dsh-knowledge/reviews', {

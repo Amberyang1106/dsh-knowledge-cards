@@ -9,7 +9,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { isManagedFrontmatterKey, parseYamlPayload } from '../core/frontmatter.ts'
+import { isManagedFrontmatterKey, parseFrontmatter, parseYamlPayload } from '../core/frontmatter.ts'
 import type { CardMeta, PageInput } from '../core/types.ts'
 import { searchCards } from '../core/search.ts'
 import { auditKb, buildDeepAuditPromptForKb } from './audit.ts'
@@ -196,7 +196,9 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
           if (slug === '') return json(res, { ok: false, error: 'slug is required' }, 400)
           const card = await readCard(kb, slug)
           if (card === null) return json(res, { ok: false, error: `card not found: ${slug}` }, 404)
-          ok(res, { card })
+          // Also hand back the parsed frontmatter object so structured editors
+          // (field cards) can prefill without a client-side YAML parser.
+          ok(res, { card, frontmatter: parseFrontmatter(card.raw).frontmatter ?? {} })
         } catch (error) {
           json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
         }
@@ -247,6 +249,9 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
             sources: fields.sources !== undefined ? asStringArray(fields.sources) : undefined,
             body: fields.body !== undefined ? asString(fields.body) : undefined,
             frontmatterYaml: fields.frontmatterYaml !== undefined ? asString(fields.frontmatterYaml) : undefined,
+            frontmatter: fields.frontmatter !== undefined && typeof fields.frontmatter === 'object' && fields.frontmatter !== null
+              ? (fields.frontmatter as Record<string, unknown>)
+              : undefined,
           })
           ok(res, { result })
         } catch (error) {
@@ -576,13 +581,26 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
           const tags = parsedYaml !== null ? yamlList(parsedYaml.tags) : asStringArray(body?.tags)
           const related = parsedYaml !== null ? yamlList(parsedYaml.related) : asStringArray(body?.related)
           const sources = parsedYaml !== null ? yamlList(parsedYaml.sources) : asStringArray(body?.sources)
-          const frontmatter: Record<string, unknown> | undefined = parsedYaml === null ? undefined : (() => {
-            const extra: Record<string, unknown> = {}
-            for (const [key, value] of Object.entries(parsedYaml as Record<string, unknown>)) {
-              if (!isManagedFrontmatterKey(key) && value !== null && value !== undefined) extra[key] = value
-            }
-            return extra
-          })()
+          const frontmatter: Record<string, unknown> | undefined = parsedYaml === null
+            ? (() => {
+                // Structured (non-YAML) authoring — the field form posts a
+                // parsed object of extra keys; managed keys stay in their fields.
+                const raw = body?.frontmatter
+                if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+                const extra: Record<string, unknown> = {}
+                for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+                  if (isManagedFrontmatterKey(key) || value === null || value === undefined) continue
+                  extra[key] = value
+                }
+                return extra
+              })()
+            : (() => {
+                const extra: Record<string, unknown> = {}
+                for (const [key, value] of Object.entries(parsedYaml as Record<string, unknown>)) {
+                  if (!isManagedFrontmatterKey(key) && value !== null && value !== undefined) extra[key] = value
+                }
+                return extra
+              })()
           const result = await createCard(kb, {
             type,
             title,

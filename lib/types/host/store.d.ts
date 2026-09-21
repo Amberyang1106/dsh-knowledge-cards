@@ -104,6 +104,13 @@ export interface CardEditInput {
      * created is preserved, updated is re-stamped on change.
      */
     frontmatterYaml?: string;
+    /**
+     * Structured replacement of the NON-MANAGED frontmatter keys — the field-card
+     * editing path (type=field), where the panel posts a parsed object instead of
+     * hand-written YAML. Managed keys (type/title/description/tags/related/
+     * sources/created/updated) keep coming from their own input fields.
+     */
+    frontmatter?: Record<string, unknown>;
 }
 /**
  * Manually edit one card in place (same slug/path — inbound [[wikilinks]]
