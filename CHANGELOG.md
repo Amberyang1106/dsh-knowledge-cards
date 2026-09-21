@@ -2,6 +2,51 @@
 
 本插件的版本发布记录。安装/升级方式见 [README](README.md#安装)。
 
+## v0.4.0（2026-09-21）— field 字段卡 + 一键血缘补齐
+
+### 与 v0.3.0 的主要差异
+
+v0.3.0 让「规则」可被外部程序读取执行；v0.4.0 面向**财务报表字段的语义资产化**：新增 `field` 卡片类型，把「一个业务语义字段在各系统的定义/计算/实现/血缘/治理」收进一张卡，并提供**面板一键血缘补齐**。
+
+### ✨ 新功能 1：`field` 字段卡（一张卡 = 一个业务语义字段）
+
+- **不是数据库列**：`Revenue` 这类字段在 BPC / Databricks / Genie / Power BI 的实现差异写在卡内，避免按物理列建出多张重复卡。
+- **结构化元数据进 frontmatter**：`field_id` / `canonical_name` / `aliases` / `field_kind` / `data_type` / `aggregation` / `unit` / `status` / `review_status` / `evidence_level` / `domain` / `workstream` / `subject_area` / `source_table` / `source_field` / `business_owner` / `effective_from` / `last_reviewed`；血缘在 `depends_on` / `used_by` / `implemented_in` / `governed_by`。
+- **5 分区结构化表单（仅 field）**：① Overview（身份与定义）② Logic（口径与逻辑）③ Implementation（物理实现）④ Lineage & Impact（血缘与相关阅读）⑤ Governance（治理与证据）；①② 默认展开，其余按需展开。其他类型不受影响（rules 仍用整卡 YAML 编辑器，其余仍是简单表单）。
+- **卡片详情新增 🧬 血缘区**：依赖 / 被使用 / 实现于 / 受约束四行；能对上卡片的目标可点击跳转，物理表/报表等外部目标显示为灰色胶囊（不再与「关联」混淆）。表单同时补齐 `related`（相关阅读）输入——此前手工建卡无法写入该键。
+
+### ✨ 新功能 2：血缘读写与体检
+
+- `wiki_edit_card` 新增 `relations`（depends_on / used_by / implemented_in / governed_by，按 key 替换）与 `metadata`（字段元数据）参数，走结构化通道写入：保留其他键、自动记日志、重建索引。**溯源纪律**：AI 推断内容必须标 `review_status` / `evidence_level` = `inferred`，严禁伪造 `confirmed`。
+- `wiki_lint` 新增**血缘检查**：悬空 `depends_on`、单向不对称（A depends_on B 但 B 缺 used_by A）、自指、环；关系指向的卡片同时计入入链，字段卡不再被误报孤立。
+
+### ✨ 新功能 3：面板「🧬 血缘补齐」按钮
+
+- **① 确定性预扫**（零成本、不改卡）：从卡内正文/元数据挖候选边（引用 + 推导关键词匹配，自动补反向边），并体检元数据缺口（source_table 填了 PBI 这类消费端、dimension 却标 additive、field_id 残缺、缺 evidence_level）。
+- **② AI 分析**（可选）：宿主经 `ctx.subagents` 发起一次 agent 运行读全库字段卡，agent 用新工具 `wiki_lineage_propose` 把带证据与置信度的提案写入待审文件（**不直接改卡**）；面板轮询自动并入预览。宿主无 subagents 服务时优雅降级并提示。
+- **③ 应用选中**：确定性写入——关系取并集、元数据设/清、统一标 `inferred`、已 `confirmed` 的卡不降级、每卡记看板明细。
+- 新增 5 条路由：`lineage/scan`、`lineage/llm-status`、`lineage/run`、`lineage/proposals`、`lineage/apply`；新增工具 `wiki_lineage_propose`。
+
+### 🔧 其它
+
+- 路由 26 → **31**；agent 工具 21 → **22**；测试 40 → **46**（新增字段卡结构化表单路径、血缘 lint、血缘按钮端到端用例）
+- 实机验证（ISG Service 库）：确定性预扫复现出人工推导的边（opportunity-name/number → depends_on opportunity-ID + 反向 used_by，以及 aggregation / evidence_level 元数据缺口），且**不编造**无证据的关系（Sales-Doc-Number 未生成边）
+
+### ⚠️ 已知限制
+
+- 「② AI 分析」依赖宿主 `subagents` 服务，作者环境尚未实机跑通 provider 解析（面板会显示探测结果，不可用时自动降级为预扫）。
+- 血缘目前是结构化数据 + 面板预览/体检，**尚无**「给一个字段 → 返回受影响字段/报表」的图查询接口与可视化。
+
+### 安装 / 升级
+
+```sh
+dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.0
+```
+
+重启 `dsh web` 生效；知识库数据不受影响。
+
+---
+
 ## v0.3.0（2026-09-03）— 规则卡（type=rules）+ 嵌套 YAML frontmatter + 规则集接口
 
 ### 与 v0.2.0 的主要差异

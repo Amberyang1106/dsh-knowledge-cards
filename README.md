@@ -1,6 +1,6 @@
 # @amberyang1106/dsh-knowledge-cards
 
-DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡片」入口，中央列展示知识库面板（卡片墙 / 资料 / 代码 / 看板 / 审核 / 知识库管理 / 回收站），宿主经 `/api/dsh-knowledge/*` 路由读写本地知识库，并提供 21 个 `wiki_*` agent 工具，让任意项目会话把领域知识作为上下文拉进来。支持 **`rules` 规则卡类型**与批量规则集读取接口（`GET /api/dsh-knowledge/rules`），供 ROW PSD Recon 等对账管道在运行时读取并执行声明式校验规则（确定性、无 LLM）。
+DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡片」入口，中央列展示知识库面板（卡片墙 / 资料 / 代码 / 看板 / 审核 / 知识库管理 / 回收站），宿主经 `/api/dsh-knowledge/*` 路由读写本地知识库，并提供 22 个 `wiki_*` agent 工具，让任意项目会话把领域知识作为上下文拉进来。支持 **`rules` 规则卡**（供 ROW PSD Recon 等对账管道读取执行）、**`field` 字段卡**（业务语义字段：定义/计算/实现/血缘/治理，配 5 分区结构化表单与一键血缘补齐）。
 
 基于 [Karpathy 的 LLM Wiki 方法论](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 与 [nashsu/llm_wiki](https://github.com/nashsu/llm_wiki) 的实现范式：**原始资料（只读）→ LLM 维护的知识卡片 → schema/purpose 规则**。
 
@@ -42,9 +42,10 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
   - 回收站：已删除的卡片与知识库，逐项**恢复**或**彻底删除**（删除是软删除——卡片在 `<kb>/.trash/`、知识库在 `~/.dsh/knowledge-cards/.trash/`，可随时恢复；彻底删除才物理清除）
     <img width="1990" height="454" alt="image" src="https://github.com/user-attachments/assets/0976e3fe-47ad-48aa-bb40-fe4ba40cd391" />
 
-- **宿主 `/api/dsh-knowledge/*` 路由**：kbs（列表/创建）、cards（列表/搜索）、card（详情）、commit、card/edit、**card/create（手动建卡）**、**card/delete · card/restore · card/purge（卡片回收站）**、**kbs/delete · kbs/restore · kbs/purge（知识库回收站）**、**trash（回收站列表）**、**rules（规则集编译）**、log、sources、lint、import-cards、rebuild、code（列表/上传）、code/content、code/delete、reviews、reviews/resolve、audit、audit-prompt
+- **宿主 `/api/dsh-knowledge/*` 路由（31 条）**：kbs（列表/创建）、cards（列表/搜索）、card（详情，附解析后的 frontmatter）、commit、card/edit、**card/create（手动建卡）**、**card/delete · card/restore · card/purge（卡片回收站）**、**kbs/delete · kbs/restore · kbs/purge（知识库回收站）**、**trash**、**rules（规则集编译）**、**lineage/scan · lineage/llm-status · lineage/run · lineage/proposals · lineage/apply（血缘补齐）**、log、sources、lint、import-cards、rebuild、code（列表/上传）、code/content、code/delete、reviews、reviews/resolve、audit、audit-prompt
 - **规则卡（type=rules）+ 规则集接口**：面板「+ 新建卡片」选 `rules` 类型可直接编写规则卡（type/title/rule_id/rule_set/status/conditions/outcome/test_cases 整卡 frontmatter 为**嵌套 YAML**，建卡与编辑提供模板化 YAML 编辑器）；生命周期 `draft → review → active → deprecated`。`GET /api/dsh-knowledge/rules?kb&ruleSet&status` 批量编译 active（且生效期内）规则：结构校验（必填字段 / 状态机 / 操作符白名单 eq/ne/gt/ge/lt/le/in/not_in/is_blank/is_not_blank/contains）、过滤非 active、生成内容版本 `sha256:` 哈希，返回 `{ruleSet, version, hash, rules[], invalidRules[]}`——坏规则显式报告、不静默丢。规则供 ROW PSD Recon 等对账程序运行时读取执行；新增/停用场景只需维护卡片，无需改消费方代码。
-- **21 个 agent 工具**（任意项目会话可用，跨项目上下文注入）：`wiki_kbs` / `wiki_create_kb` / `wiki_search` / `wiki_read` / `wiki_edit_card` / `wiki_ingest` / `wiki_commit` / `wiki_import_cards` / `wiki_lint` / `wiki_audit` / `wiki_review_submit` / `wiki_reviews` / `wiki_code_list` / `wiki_code_read` / **`wiki_card_delete` / `wiki_card_restore` / `wiki_card_purge`** / **`wiki_kb_delete` / `wiki_kb_restore` / `wiki_kb_purge`** / **`wiki_trash_list`**（删除均为软删除入回收站，`purge` 才是物理删除、仅在用户明确要求时使用）
+- **字段卡（type=field）+ 一键血缘补齐**：一张卡 = 一个**业务语义字段**（如 Revenue），其各系统物理实现写在卡内；结构化元数据（field_kind / data_type / aggregation / unit / source_table / source_field / aliases / status / review_status / evidence_level / domain / workstream …）进 frontmatter，正文写业务定义、计算逻辑、口径、血缘与校验。面板对 field 卡提供 **5 分区结构化表单**（① Overview ② Logic ③ Implementation ④ Lineage & Impact ⑤ Governance），卡片详情显示 **🧬 血缘** 区（依赖/被使用/实现于/受约束，能对上卡片的目标可点击跳转，物理表/报表等外部目标显示为灰色胶囊）。卡片 tab 的 **「🧬 血缘补齐」按钮**：① 确定性预扫（零成本、不改卡，从正文与元数据挖候选边 + 补反向 used_by + 体检元数据缺口）→ ② 可选 AI 分析（发起一次 agent 运行读全库字段卡，把带证据与置信度的提案写入待审文件）→ ③ 预览勾选后「应用选中」（确定性写入：关系取并集、统一标 `inferred`、已 confirmed 的卡不降级、每卡记看板明细）。配套 `wiki_lint` 血缘体检：悬空 depends_on / 单向不对称 / 自指 / 环。
+- **22 个 agent 工具**（任意项目会话可用，跨项目上下文注入）：`wiki_kbs` / `wiki_create_kb` / `wiki_search` / `wiki_read` / `wiki_edit_card`（可写结构化 `relations` 与字段 `metadata`）/ `wiki_ingest` / `wiki_commit` / `wiki_import_cards` / `wiki_lint` / `wiki_audit` / `wiki_review_submit` / `wiki_reviews` / `wiki_code_list` / `wiki_code_read` / **`wiki_card_delete` / `wiki_card_restore` / `wiki_card_purge`** / **`wiki_kb_delete` / `wiki_kb_restore` / `wiki_kb_purge`** / **`wiki_trash_list`** / **`wiki_lineage_propose`**（提交血缘提案，不直接改卡）
 
 ## 知识库布局（每库）
 
@@ -69,10 +70,10 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 > ⚠️ **仓库为私有**：安装前需先被授予该仓库的读权限（维护者将你加为 GitHub 协作者，或你已在组织的允许列表内）。首次安装时 git 会弹出 GitHub 登录，用你自己的账号登录即可；未授权时会报 `Authentication failed` / `could not read Username`。
 
 ```sh
-dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.3.0
+dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.0
 ```
 
-> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.3.0` 换成新 tag。
+> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.4.0` 换成新 tag。
 
 重启 `dsh web`，侧边栏出现「知识卡片」。你的知识库数据在 `~/.dsh/knowledge-cards/`，安装/升级/卸载插件均不影响。
 
@@ -102,7 +103,7 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 | 模式 | 命令 | 用途 |
 |---|---|---|
 | 开发模式（link:） | `dsh plugin --profile web add C:/Users/yangtt16/dsh-knowledge-cards` | 日常开发：改代码 → build → 重启即生效 |
-| 发布验证模式（github spec） | `dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.3.0` | 验证用户视角的安装；与 README 安装命令一致 |
+| 发布验证模式（github spec） | `dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.0` | 验证用户视角的安装；与 README 安装命令一致 |
 | 卸载 | `dsh plugin --profile web remove @amberyang1106/dsh-knowledge-cards` | 移除依赖与 bundles 条目 |
 
 原理：`dsh plugin` 把参数转发给 profile 目录里的 pnpm，成功后自动 reconcile `dsh.profile.bundles`——同名包增删 spec 不会双重挂载。
@@ -121,9 +122,9 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 2. 更新 README（功能变化、Roadmap 里已完成项勾掉）
 3. **同步本地 dsh-wiki 工作区 README**（`C:\Users\yangtt16\OneDrive - Lenovo\AI Test\Finance KM\dsh-wiki\README.md`）：功能特性 / 路由数 / 工具数 / 面板 tab / 测试数 / Changelog / 后续计划，与本仓库 README、CHANGELOG.md 保持口径一致
 4. `pnpm build` 确保 `lib/` 同步 → `git add -A && git commit`
-5. `git tag v0.3.0 && git push && git push --tags`
-6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.3.0` → 重启验证 → 再切回 link: 开发
-7. 更新 GitHub Release（`gh release create v0.3.0 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.3.0` 重装
+5. `git tag v0.4.0 && git push && git push --tags`
+6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.0` → 重启验证 → 再切回 link: 开发
+7. 更新 GitHub Release（`gh release create v0.4.0 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.4.0` 重装
 
 ### 关键注意点
 
@@ -137,9 +138,10 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 以下能力当前**尚未实现**，供使用者了解功能边界：
 
 - **审核队列的 agent 代为处理**：当前 `reviews/resolve` 仅面板「审核」tab 可用（预定义操作 + 预生成搜索查询），agent 只能 `wiki_review_submit` 提交、`wiki_reviews` 查看，不能直接 resolve / 跳过——规划中让 agent 能按用户指示代为处理审核项。
+- **血缘图谱与 Impact Analysis 接口**：结构化血缘（depends_on / used_by / implemented_in / governed_by）与面板预览已就绪，但还缺「给一个字段 → 返回受影响字段/报表」的图查询接口与可视化；此外「🧬 血缘补齐」的 ② AI 分析分支（宿主 `subagents` 路径）在作者环境尚未实机验证 provider 解析，当前以确定性预扫为主。
 - **资料源在线上传**：当前 `raw/sources/` 需手动放入文件（面板「代码」tab 已支持上传而「资料」tab 未支持）；规划中支持资料拖拽上传 + 自动入待摄入清单。
 - **知识库导出 / 备份**：当前无导出接口（备份 = 直接拷贝 `~/.dsh/knowledge-cards/` 目录）；规划中提供 JSON / Markdown 导出与一键备份。
-- **知识图谱 / 卡片关系可视化**：`[[wikilink]]` 交叉引用数据已具备，但无可视化；规划中做卡片关系图谱。
+- **知识图谱 / 卡片关系可视化**：`[[wikilink]]` 交叉引用与结构化血缘数据已具备，但无可视化；规划中做卡片关系图谱。
 - **定时自动 lint / 摄入提醒**：当前无调度能力；规划中支持周期性 `wiki_lint` 与待摄入资料提醒。
 - **npm 分发**（可选路径）：当前经 GitHub 私有仓库分发（需读权限）；如使用者增多，可发布到 npm 实现零权限安装，规划中未实施。
 
