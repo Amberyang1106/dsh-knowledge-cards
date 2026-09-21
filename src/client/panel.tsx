@@ -53,10 +53,59 @@ function frontmatterPayloadOf(raw: string): string {
 
 const KB_STORAGE_KEY = 'dsh-knowledge-cards:kb'
 
-const TYPE_FILTERS = ['all', 'entity', 'concept', 'source', 'query', 'comparison', 'synthesis', 'rules'] as const
+const TYPE_FILTERS = ['all', 'entity', 'concept', 'source', 'query', 'comparison', 'synthesis', 'rules', 'field'] as const
 
 /** Types offered by the manual create form (overview is auto-maintained). */
-const CREATE_TYPES = ['concept', 'entity', 'source', 'query', 'comparison', 'synthesis', 'rules'] as const
+const CREATE_TYPES = ['concept', 'entity', 'source', 'query', 'comparison', 'synthesis', 'rules', 'field'] as const
+
+/** Types whose whole frontmatter is edited as one canonical YAML payload. */
+const YAML_EDITOR_TYPES: readonly string[] = ['rules', 'field']
+
+/** Starter template for a field card (type=field) — structured metadata in
+ * the frontmatter (identity / logic / implementation / lineage / governance),
+ * narrative sections go in the body. Minimal first version: fill the key
+ * facts, let the agent complete the rest. */
+const FIELD_YAML_TEMPLATE = [
+  'type: field',
+  'title: ', // 必填：业务语义字段名，如 Premium Mix %
+  'description: 一句话业务定义',
+  '',
+  '# --- Identity ---',
+  'field_id: field.', // 稳定 id，如 field.premium_mix_pct
+  'canonical_name: ', // 规范名（snake_case）
+  'aliases: []', // 别名：不同系统/报表里的叫法
+  'field_kind: measure', // dimension|measure|calculated_field|flag|key|mapping|date|attribute|parameter',
+  'data_type: percentage', // string|amount|percentage|integer|ratio|date|boolean',
+  'status: draft', // draft|active|deprecated|retired
+  'domain: Finance',
+  'workstream: Management Reporting',
+  'subject_area: ',
+  '',
+  '# --- Logic ---',
+  'aggregation: non-additive', // additive|semi-additive|non-additive
+  'unit: ', // USD / USD M / % / ...
+  'source_table: ',
+  'source_field: ',
+  '',
+  '# --- Relations（slug 或名称，支撑 Impact Analysis）---',
+  'depends_on: []',
+  'used_by: []',
+  'implemented_in: []',
+  'governed_by: []',
+  '',
+  '# --- Governance ---',
+  'business_owner: ',
+  'technical_owner: ',
+  'effective_from: ',
+  'last_reviewed: ',
+  'review_status: draft', // draft|inferred|confirmed|disputed|deprecated
+  'evidence_level: ', // source_code|business_document|business_confirmation|inferred
+  '',
+  '# --- 常规卡片字段 ---',
+  'tags: []',
+  'related: []',
+  'sources: []',
+].join('\n')
 
 /** Starter template for a rule card (type=rules) — canonical YAML frontmatter. */
 const RULE_YAML_TEMPLATE = [
@@ -190,7 +239,7 @@ function CardsTab({
   const [createError, setCreateError] = useState<string | null>(null)
   const [createdNote, setCreatedNote] = useState<string | null>(null)
 
-  const isRuleDraft = draftType === 'rules'
+  const isYamlDraft = YAML_EDITOR_TYPES.includes(draftType)
 
   const openCreate = (): void => {
     setDraftType('concept')
@@ -208,19 +257,22 @@ function CardsTab({
 
   const switchDraftType = (type: string): void => {
     setDraftType(type)
-    if (type === 'rules' && draftYaml.trim() === '') setDraftYaml(RULE_YAML_TEMPLATE)
+    if (draftYaml.trim() === '') {
+      if (type === 'rules') setDraftYaml(RULE_YAML_TEMPLATE)
+      else if (type === 'field') setDraftYaml(FIELD_YAML_TEMPLATE)
+    }
   }
 
   const saveCreate = async (): Promise<void> => {
-    if (isRuleDraft ? draftYaml.trim() === '' : draftTitle.trim() === '') return
+    if (isYamlDraft ? draftYaml.trim() === '' : draftTitle.trim() === '') return
     setSavingDraft(true)
     setCreateError(null)
     try {
       const data = await api<{ result: { card: CardMeta } }>('/api/dsh-knowledge/card/create', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: isRuleDraft
-          ? JSON.stringify({ kb: kbId, type: 'rules', frontmatterYaml: draftYaml, body: draftBody })
+        body: isYamlDraft
+          ? JSON.stringify({ kb: kbId, type: draftType, frontmatterYaml: draftYaml, body: draftBody })
           : JSON.stringify({
               kb: kbId,
               type: draftType,
@@ -257,10 +309,10 @@ function CardsTab({
               {CREATE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
             </select>
           </label>
-          {isRuleDraft ? (
+          {isYamlDraft ? (
             <>
-              <p className={css.note}>{t(undefined, 'create.ruleHint')}</p>
-              <label className={css.editLabel}>{t(undefined, 'create.ruleYaml')}
+              <p className={css.note}>{draftType === 'field' ? t(undefined, 'create.fieldHint') : t(undefined, 'create.ruleHint')}</p>
+              <label className={css.editLabel}>{draftType === 'field' ? t(undefined, 'create.fieldYaml') : t(undefined, 'create.ruleYaml')}
                 <textarea
                   className={css.editorTextarea}
                   rows={22}
@@ -296,7 +348,7 @@ function CardsTab({
             </>
           )}
           <div className={css.editActions}>
-            <button className={css.run} disabled={savingDraft || (isRuleDraft ? draftYaml.trim() === '' : draftTitle.trim() === '')} onClick={() => void saveCreate()}>
+            <button className={css.run} disabled={savingDraft || (isYamlDraft ? draftYaml.trim() === '' : draftTitle.trim() === '')} onClick={() => void saveCreate()}>
               {savingDraft ? '…' : t(undefined, 'create.save')}
             </button>
             <button className={css.runSmall} onClick={() => setCreating(false)}>{t(undefined, 'card.cancel')}</button>
@@ -399,8 +451,8 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
     setSaving(true)
     setError(null)
     try {
-      const isRule = card.type === 'rules'
-      const payload = isRule
+      const useYamlEditor = YAML_EDITOR_TYPES.includes(card.type)
+      const payload = useYamlEditor
         ? JSON.stringify({ kb: kbId, slug: card.slug, frontmatterYaml: editYaml, body: editBody })
         : JSON.stringify({
             kb: kbId,
@@ -461,10 +513,11 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
         <h2 className={css.detailTitle}>{t(undefined, 'edit.title')}</h2>
         {savedNote !== null && <div className={css.lintResult}>{savedNote}</div>}
         <div className={css.editForm}>
-          {card.type === 'rules' ? (
+          {YAML_EDITOR_TYPES.includes(card.type) ? (
             <>
-              <p className={css.note}>{t(undefined, 'create.ruleHint')}</p>
-              <label className={css.editLabel}>{t(undefined, 'create.ruleYaml')}
+              <p className={css.note}>{card.type === 'field' ? t(undefined, 'create.fieldHint') : t(undefined, 'create.ruleHint')}
+              </p>
+              <label className={css.editLabel}>{card.type === 'field' ? t(undefined, 'create.fieldYaml') : t(undefined, 'create.ruleYaml')}
                 <textarea
                   className={css.editorTextarea}
                   rows={22}
@@ -488,7 +541,7 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
             </>
           )}
           <label className={css.editLabel}>{t(undefined, 'card.body')}
-            <textarea className={css.editorTextarea} rows={card.type === 'rules' ? 6 : 14} value={editBody} onChange={(event) => setEditBody(event.target.value)} />
+            <textarea className={css.editorTextarea} rows={YAML_EDITOR_TYPES.includes(card.type) ? 6 : 14} value={editBody} onChange={(event) => setEditBody(event.target.value)} />
           </label>
           <div className={css.editActions}>
             <button className={css.run} disabled={saving} onClick={() => void saveEdit()}>{saving ? '…' : t(undefined, 'edit.save')}</button>

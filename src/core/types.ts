@@ -17,6 +17,7 @@ export const CARD_TYPES = [
   'synthesis',
   'overview',
   'rules',
+  'field',
 ] as const
 
 export type CardType = (typeof CARD_TYPES)[number] | (string & {})
@@ -30,6 +31,7 @@ export const TYPE_DIRS: Record<string, string> = {
   comparison: 'comparisons',
   synthesis: 'synthesis',
   rules: 'rules',
+  field: 'fields',
 }
 
 /** Card metadata as parsed from frontmatter (no body). */
@@ -296,4 +298,65 @@ export interface RulesResult {
   statusFilter: string
   rules: CompiledRule[]
   invalidRules: InvalidRule[]
+}
+
+// ---------------------------------------------------------------------------
+// field cards (type=field): one card per BUSINESS SEMANTIC FIELD (e.g. Revenue),
+// not per physical database column — its physical implementations across
+// systems live inside the card. Structured identity/logic/governance metadata
+// sits in the frontmatter (nested YAML); narrative sections live in the body.
+// Relations (depends_on / used_by / implemented_in / governed_by) plus
+// [[wikilink]] cross-references form the seed of a lightweight finance
+// semantic graph for impact analysis.
+// ---------------------------------------------------------------------------
+
+/** What kind of field this is (one type `field`, discriminated by this key). */
+export const FIELD_KINDS = [
+  'dimension', 'measure', 'calculated_field', 'flag', 'key', 'mapping', 'date', 'attribute', 'parameter',
+] as const
+
+export const FIELD_DATA_TYPES = [
+  'string', 'amount', 'percentage', 'integer', 'ratio', 'date', 'boolean',
+] as const
+
+/** How the value may be aggregated across rows. */
+export const FIELD_AGGREGATIONS = ['additive', 'semi-additive', 'non-additive'] as const
+
+export const FIELD_STATUSES = ['draft', 'active', 'deprecated', 'retired'] as const
+
+/** Trust level of the recorded logic (AI-inferred vs owner-confirmed). */
+export const FIELD_REVIEW_STATUSES = ['draft', 'inferred', 'confirmed', 'disputed', 'deprecated'] as const
+
+/** What the logic is based on — keeps inferred knowledge clearly marked. */
+export const FIELD_EVIDENCE_LEVELS = ['source_code', 'business_document', 'business_confirmation', 'inferred'] as const
+
+/** Structured relation keys carried in a field card's frontmatter. */
+export const FIELD_RELATION_KEYS = ['depends_on', 'used_by', 'implemented_in', 'governed_by'] as const
+
+/** Structured metadata of one field card (frontmatter view). */
+export interface FieldMeta {
+  field_id?: string
+  canonical_name?: string
+  field_kind?: string
+  data_type?: string
+  aggregation?: string
+  unit?: string
+  status?: string
+  review_status?: string
+  evidence_level?: string
+  domain?: string
+  workstream?: string
+  subject_area?: string
+  business_owner?: string
+  technical_owner?: string
+  source_table?: string
+  source_field?: string
+  depends_on?: string[]
+  used_by?: string[]
+  implemented_in?: string[]
+  governed_by?: string[]
+  effective_from?: string
+  last_reviewed?: string
+  /** Any additional frontmatter keys. */
+  [key: string]: unknown
 }

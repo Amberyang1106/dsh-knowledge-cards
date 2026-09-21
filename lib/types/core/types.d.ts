@@ -7,7 +7,7 @@
  * @module dsh-knowledge-cards/core/types
  */
 /** Known page types (llm_wiki BASE_SCHEMA_TYPES); schema.md may extend them. */
-export declare const CARD_TYPES: readonly ["entity", "concept", "source", "query", "comparison", "synthesis", "overview", "rules"];
+export declare const CARD_TYPES: readonly ["entity", "concept", "source", "query", "comparison", "synthesis", "overview", "rules", "field"];
 export type CardType = (typeof CARD_TYPES)[number] | (string & {});
 /** Directory (wiki-relative) a page type maps to by default. */
 export declare const TYPE_DIRS: Record<string, string>;
@@ -229,5 +229,44 @@ export interface RulesResult {
     statusFilter: string;
     rules: CompiledRule[];
     invalidRules: InvalidRule[];
+}
+/** What kind of field this is (one type `field`, discriminated by this key). */
+export declare const FIELD_KINDS: readonly ["dimension", "measure", "calculated_field", "flag", "key", "mapping", "date", "attribute", "parameter"];
+export declare const FIELD_DATA_TYPES: readonly ["string", "amount", "percentage", "integer", "ratio", "date", "boolean"];
+/** How the value may be aggregated across rows. */
+export declare const FIELD_AGGREGATIONS: readonly ["additive", "semi-additive", "non-additive"];
+export declare const FIELD_STATUSES: readonly ["draft", "active", "deprecated", "retired"];
+/** Trust level of the recorded logic (AI-inferred vs owner-confirmed). */
+export declare const FIELD_REVIEW_STATUSES: readonly ["draft", "inferred", "confirmed", "disputed", "deprecated"];
+/** What the logic is based on — keeps inferred knowledge clearly marked. */
+export declare const FIELD_EVIDENCE_LEVELS: readonly ["source_code", "business_document", "business_confirmation", "inferred"];
+/** Structured relation keys carried in a field card's frontmatter. */
+export declare const FIELD_RELATION_KEYS: readonly ["depends_on", "used_by", "implemented_in", "governed_by"];
+/** Structured metadata of one field card (frontmatter view). */
+export interface FieldMeta {
+    field_id?: string;
+    canonical_name?: string;
+    field_kind?: string;
+    data_type?: string;
+    aggregation?: string;
+    unit?: string;
+    status?: string;
+    review_status?: string;
+    evidence_level?: string;
+    domain?: string;
+    workstream?: string;
+    subject_area?: string;
+    business_owner?: string;
+    technical_owner?: string;
+    source_table?: string;
+    source_field?: string;
+    depends_on?: string[];
+    used_by?: string[];
+    implemented_in?: string[];
+    governed_by?: string[];
+    effective_from?: string;
+    last_reviewed?: string;
+    /** Any additional frontmatter keys. */
+    [key: string]: unknown;
 }
 //# sourceMappingURL=types.d.ts.map

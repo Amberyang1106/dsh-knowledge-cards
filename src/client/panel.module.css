@@ -378,6 +378,12 @@ html[data-dsh-knowledge-active] .view {
   border: 1px solid color-mix(in srgb, var(--dsw-alias-button-info-fill) 55%, transparent);
 }
 
+.type-field {
+  color: var(--dsw-alias-state-success-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);
+}
+
 .typeOther {
   color: var(--dsw-alias-label-secondary);
   background: var(--dsw-alias-bg-layer-2);

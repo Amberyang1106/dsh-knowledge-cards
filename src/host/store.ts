@@ -171,6 +171,7 @@ export async function ensureKbStructure(kbPath: string): Promise<void> {
 | comparison | wiki/comparisons/ | Side-by-side analysis of related entities |
 | synthesis | wiki/synthesis/ | Cross-cutting summaries and conclusions |
 | rules | wiki/rules/ | Executable validation rules (structured YAML in frontmatter, read by external check pipelines) |
+| field | wiki/fields/ | Business semantic fields: definition / calculation / scope / implementation / lineage / governance |
 | overview | wiki/ | High-level project summary (one per project) |
 
 ## Naming Conventions

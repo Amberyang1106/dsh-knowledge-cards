@@ -57,6 +57,8 @@ declare const zh: {
     readonly 'create.created': "已创建卡片「{title}」";
     readonly 'create.ruleHint': "规则卡（type=rules）：整卡 frontmatter 即可执行规则 YAML——必填 title / rule_id / rule_set / status / conditions / outcome.category；生命周期 draft → review → active → deprecated，仅 active 且在生效期内的规则会被对账程序读取执行（GET /api/dsh-knowledge/rules）。正文写业务说明与证据，供人阅读。";
     readonly 'create.ruleYaml': "规则 YAML（frontmatter 可执行部分）";
+    readonly 'create.fieldHint': "字段卡（type=field）：一张卡 = 一个业务语义字段（如 Revenue），不是数据库列——同一字段在各系统（BPC/Databricks/Genie/Power BI）的物理实现写在卡内。frontmatter 承载结构化元数据（field_kind / data_type / aggregation / unit / source_table / source_field / depends_on / used_by / business_owner / review_status / evidence_level），正文写业务定义、计算逻辑、口径条件、血缘、校验与例外。首次只需填关键事实，其余交给 agent 补齐。";
+    readonly 'create.fieldYaml': "字段卡 YAML（结构化元数据）";
     readonly 'form.tags': "标签（逗号分隔）";
     readonly 'form.related': "关联 slug（逗号分隔）";
     readonly 'form.sources': "来源文件名（逗号分隔）";
