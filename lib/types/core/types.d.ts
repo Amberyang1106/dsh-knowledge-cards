@@ -70,7 +70,7 @@ export interface SourceStatus {
 /** One lint finding. */
 export interface LintIssue {
     severity: 'error' | 'warn';
-    kind: 'broken-wikilink' | 'orphan' | 'missing-description' | 'missing-frontmatter' | 'missing-source' | 'empty-body';
+    kind: 'broken-wikilink' | 'orphan' | 'missing-description' | 'missing-frontmatter' | 'missing-source' | 'empty-body' | 'relation-dangling' | 'relation-asymmetric' | 'relation-self' | 'relation-cycle';
     path?: string;
     message: string;
 }

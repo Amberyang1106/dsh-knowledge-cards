@@ -21,6 +21,7 @@
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { isManagedFrontmatterKey, parseFrontmatter } from '../core/frontmatter.ts'
 import { searchCards } from '../core/search.ts'
 import type { PageInput } from '../core/types.ts'
 import { lintKb, renderLintReport } from './lint.ts'
@@ -630,7 +631,7 @@ export function wikiCodeReadTool() {
 export function wikiEditCardTool() {
   return defineTool({
     name: 'wiki_edit_card',
-    description: '手动编辑一张知识卡片的内容（替换语义：提供的字段替换原值，未提供的保留；同 slug 原地修改，[[wikilink]] 不受影响；自动记 edit 日志并重建索引）。用于人工修正卡片或按 lint 结果修卡片。Triggers: 改卡片、编辑卡片、修正知识。',
+    description: '编辑一张知识卡片（替换语义：提供的字段替换原值，未提供的保留；同 slug 原地修改，[[wikilink]] 不受影响；自动记 edit 日志并重建索引）。除标题/摘要/标签/正文外，还可写**结构化字段元数据**与**血缘关系**：metadata 用于 field 卡（field_kind/data_type/aggregation/unit/source_table/source_field/status/review_status/evidence_level/domain/workstream/subject_area/aliases 等），relations 用于 depends_on / used_by / implemented_in / governed_by——按 key 整体替换、未提供的 key 保留。**约定**：AI 推断出来的关系与元数据要显式标注来源，即同时设 metadata.review_status=inferred、metadata.evidence_level=inferred（或按实际证据给 source_code/business_document），并把待人工判断的点用 wiki_review_submit 入审核队列；不要伪造 confirmed。写完后建议 wiki_lint 检查血缘（悬空/不对称/环）。Triggers: 改卡片、编辑卡片、补全血缘、维护字段元数据。',
     parameters: {
       kb: { type: 'string', description: '知识库 id（省略用默认库）。' },
       slug: { type: 'string', required: true, description: '卡片 slug（wiki_search 查看）。' },
@@ -640,6 +641,22 @@ export function wikiEditCardTool() {
       related: { type: 'array', items: { type: 'string' }, description: '新关联 slug 列表（提供即整体替换）。' },
       sources: { type: 'array', items: { type: 'string' }, description: '新来源文件名列表（提供即整体替换）。' },
       body: { type: 'string', description: '新正文 markdown（提供即整体替换）。' },
+      relations: {
+        type: 'object',
+        description: '血缘关系（field 卡）：{ depends_on?: string[], used_by?: string[], implemented_in?: string[], governed_by?: string[] }；按 key 整体替换，未提供的 key 保留。目标建议用卡片 slug 或标题（lint 会校验 depends_on 是否存在对应字段卡）。',
+        additionalProperties: true,
+        properties: {
+          depends_on: { type: 'array', items: { type: 'string' }, description: '本字段直接依赖的字段卡（直达依赖；间接依赖交由链路推导）。' },
+          used_by: { type: 'array', items: { type: 'string' }, description: '使用本字段的下游（字段/指标卡优先）。' },
+          implemented_in: { type: 'array', items: { type: 'string' }, description: '各系统实现（数据集/measure/报表），可为非卡片目标。' },
+          governed_by: { type: 'array', items: { type: 'string' }, description: '受其约束的定义/规则卡。' },
+        },
+      },
+      metadata: {
+        type: 'object',
+        description: '结构化字段元数据（field 卡）：如 { field_kind, data_type, aggregation, unit, source_table, source_field, aliases, status, review_status, evidence_level, domain, workstream, subject_area, business_owner, effective_from, last_reviewed }；按 key 替换，未提供的 key 保留。',
+        additionalProperties: true,
+      },
     },
     output: {
       schema: {
@@ -650,18 +667,67 @@ export function wikiEditCardTool() {
           slug: { type: 'string', required: true },
           changed: { type: 'array', items: { type: 'string' }, required: true },
           title: { type: 'string', required: true },
+          relations: { type: 'object', required: true, additionalProperties: true },
         },
       },
-      render: (_args, value: { kb: string; slug: string; changed: string[]; title: string }) => {
-        if (value.changed.length === 0) return text(`卡片「${value.title}」无变更（字段与原值相同）。`)
-        return text(`卡片「${value.title}」已编辑：修改字段 ${value.changed.join('、')}（已记入知识库 log，可查看板）。`)
+      render: (_args, value: { kb: string; slug: string; changed: string[]; title: string; relations: Record<string, string[]> }) => {
+        const relationLines = Object.entries(value.relations)
+          .filter(([, targets]) => targets.length > 0)
+          .map(([key, targets]) => `  ${key}: ${targets.join(', ')}`)
+        const head = value.changed.length === 0
+          ? `卡片「${value.title}」无变更（字段与原值相同）。`
+          : `卡片「${value.title}」已编辑：修改字段 ${value.changed.join('、')}（已记入知识库 log，可查看板）。`
+        return text(relationLines.length === 0 ? head : `${head}\n当前关系：\n${relationLines.join('\n')}`)
       },
     },
-    async execute(args: { kb?: string; slug: string; title?: string; description?: string; tags?: string[]; related?: string[]; sources?: string[]; body?: string }) {
+    async execute(args: {
+      kb?: string
+      slug: string
+      title?: string
+      description?: string
+      tags?: string[]
+      related?: string[]
+      sources?: string[]
+      body?: string
+      relations?: Record<string, unknown>
+      metadata?: Record<string, unknown>
+    }) {
       const resolved = await resolveKb(args.kb)
       if (resolved === null) throw new Error('尚无知识库。先 wiki_create_kb 建库。')
       const kb = await getKb(resolved.id)
       if (kb === null) throw new Error(`unknown knowledge base: ${resolved.id}`)
+
+      // Structured frontmatter write: start from the card's current non-managed
+      // keys, apply metadata then relation keys (per-key replacement), and hand
+      // the complete set to editCard's structured channel so unrelated keys and
+      // managed keys stay intact.
+      const usesStructured = args.relations !== undefined || args.metadata !== undefined
+      let structured: Record<string, unknown> | undefined
+      if (usesStructured) {
+        const existing = await readCard(kb, args.slug)
+        if (existing === null) throw new Error(`卡片不存在: ${args.slug}`)
+        const current = parseFrontmatter(existing.raw).frontmatter ?? {}
+        const next: Record<string, unknown> = {}
+        for (const [key, value] of Object.entries(current)) {
+          if (isManagedFrontmatterKey(key)) continue
+          next[key] = value
+        }
+        for (const [key, value] of Object.entries(args.metadata ?? {})) {
+          if (isManagedFrontmatterKey(key)) continue
+          if (value === null || value === undefined) { delete next[key]; continue }
+          next[key] = value
+        }
+        for (const [key, value] of Object.entries(args.relations ?? {})) {
+          if (isManagedFrontmatterKey(key)) continue
+          if (value === null || value === undefined) { delete next[key]; continue }
+          const list = Array.isArray(value)
+            ? value.map((item) => String(item).trim()).filter((item) => item !== '')
+            : String(value).split(/[\n,]/).map((item) => item.trim()).filter((item) => item !== '')
+          next[key] = [...new Set(list)]
+        }
+        structured = next
+      }
+
       const result = await editCard(kb, args.slug, {
         title: args.title,
         description: args.description,
@@ -669,8 +735,15 @@ export function wikiEditCardTool() {
         related: args.related,
         sources: args.sources,
         body: args.body,
+        frontmatter: structured,
       })
-      return { kb: resolved.id, slug: args.slug, changed: result.changed, title: result.card.title }
+      const fm = parseFrontmatter(result.card.raw).frontmatter ?? {}
+      const relationSnapshot: Record<string, string[]> = {}
+      for (const key of ['depends_on', 'used_by', 'implemented_in', 'governed_by']) {
+        const value = fm[key]
+        relationSnapshot[key] = Array.isArray(value) ? value.map((item) => String(item)) : []
+      }
+      return { kb: resolved.id, slug: args.slug, changed: result.changed, title: result.card.title, relations: relationSnapshot }
     },
   })
 }

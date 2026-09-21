@@ -105,6 +105,10 @@ export interface LintIssue {
     | 'missing-frontmatter'
     | 'missing-source'
     | 'empty-body'
+    | 'relation-dangling'
+    | 'relation-asymmetric'
+    | 'relation-self'
+    | 'relation-cycle'
   path?: string
   message: string
 }
