@@ -462,6 +462,35 @@ html[data-dsh-knowledge-active] .view {
   text-decoration: underline;
 }
 
+/* --- card detail: structured lineage block (depends_on / used_by / …) --- */
+
+.lineageBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lineageRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.lineageKey {
+  min-width: 64px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.lineageExternal {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-layer-2);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
 .body {
   font-size: 13px;
   line-height: 1.7;

@@ -504,6 +504,7 @@ describe('knowledge routes over HTTP', () => {
       description: 'Premium 收入占 PC 收入比例（Non-additive measure）',
       tags: ['premium', 'measure'],
       sources: [],
+      related: ['related-card-a'],
       frontmatter: {
         field_id: 'field.premium_mix_pct',
         canonical_name: 'premium_mix_pct',
@@ -535,6 +536,7 @@ describe('knowledge routes over HTTP', () => {
     expect(fm.depends_on).toEqual(['Premium-Flag'])
     expect(fm.used_by).toEqual(['QBR', 'AI Navigator'])
     expect((detail.data.card as { tags: string[] }).tags).toEqual(['premium', 'measure'])
+    expect((detail.data.card as { related: string[] }).related).toEqual(['related-card-a'])
 
     // structured edit replaces the non-managed metadata wholesale (removals included)
     const edited = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/edit', {
@@ -544,6 +546,7 @@ describe('knowledge routes over HTTP', () => {
       description: '更新后的定义',
       tags: ['premium'],
       sources: [],
+      related: ['related-card-a', 'related-card-b'],
       frontmatter: {
         field_id: 'field.premium_mix_pct',
         field_kind: 'measure',
@@ -561,6 +564,7 @@ describe('knowledge routes over HTTP', () => {
     expect(fm2.used_by).toBeUndefined()
     expect(fm2.aggregation).toBeUndefined()
     expect((after.data.card as { description?: string }).description).toBe('更新后的定义')
+    expect((after.data.card as { related: string[] }).related).toEqual(['related-card-a', 'related-card-b'])
 
     // the edit is visible on the 看板 with its own note
     const log = await jsonRequest(port, 'GET', `/api/dsh-knowledge/log?kb=${encodeURIComponent(fkbId)}&action=edit`)

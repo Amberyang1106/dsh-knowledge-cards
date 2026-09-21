@@ -89,6 +89,7 @@ interface FieldDraft {
   dependsOn: string
   usedBy: string
   governedBy: string
+  related: string
   businessOwner: string
   technicalOwner: string
   effectiveFrom: string
@@ -112,7 +113,7 @@ function emptyFieldDraft(): FieldDraft {
     fieldKind: 'measure', dataType: 'amount', status: 'draft',
     domain: 'Finance', workstream: '', subjectArea: '',
     aggregation: 'non-additive', unit: '', sourceTable: '', sourceField: '',
-    implementedIn: '', dependsOn: '', usedBy: '', governedBy: '',
+    implementedIn: '', dependsOn: '', usedBy: '', governedBy: '', related: '',
     businessOwner: '', technicalOwner: '', effectiveFrom: '', lastReviewed: '',
     reviewStatus: 'draft', evidenceLevel: '', tags: '', sources: '',
   }
@@ -191,6 +192,7 @@ function fieldDraftFrom(card: CardMeta, fm: Record<string, unknown>): FieldDraft
     dependsOn: joinFieldList(fm.depends_on),
     usedBy: joinFieldList(fm.used_by),
     governedBy: joinFieldList(fm.governed_by),
+    related: card.related.join('\n'),
     businessOwner: text(fm.business_owner),
     technicalOwner: text(fm.technical_owner),
     effectiveFrom: text(fm.effective_from),
@@ -253,6 +255,7 @@ const FIELD_SECTIONS: FieldSectionSpec[] = [
       { key: 'dependsOn', labelKey: 'field.dependsOn', kind: 'list' },
       { key: 'usedBy', labelKey: 'field.usedBy', kind: 'list' },
       { key: 'governedBy', labelKey: 'field.governedBy', kind: 'list' },
+      { key: 'related', labelKey: 'field.related', kind: 'list' },
     ],
   },
   {
@@ -680,6 +683,7 @@ function CardsTab({
               description: fieldDraft.description.trim(),
               tags: splitFieldList(fieldDraft.tags),
               sources: splitFieldList(fieldDraft.sources),
+              related: splitFieldList(fieldDraft.related),
               frontmatter: buildFieldFrontmatter(fieldDraft),
               body: draftBody,
             })
@@ -832,6 +836,14 @@ function CardsTab({
 // card detail
 // ---------------------------------------------------------------------------
 
+/** Structured lineage rows shown on a card's detail page (field cards). */
+const CARD_RELATION_ROWS: Array<{ key: string; labelKey: KnowledgeCardsKey }> = [
+  { key: 'depends_on', labelKey: 'card.dependsOn' },
+  { key: 'used_by', labelKey: 'card.usedBy' },
+  { key: 'implemented_in', labelKey: 'card.implementedIn' },
+  { key: 'governed_by', labelKey: 'card.governedBy' },
+]
+
 function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
   kbId: string
   slug: string
@@ -841,6 +853,9 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
 }): ReactElement {
   const [card, setCard] = useState<Card | null>(null)
   const [cardFm, setCardFm] = useState<Record<string, unknown>>({})
+  // Identifier (slug / title, lower-cased) → slug, so lineage targets that are
+  // real cards become clickable while external ones (tables, reports) do not.
+  const [cardIndex, setCardIndex] = useState<Record<string, string>>({})
   const [editing, setEditing] = useState(false)
   const [editTitle, setEditTitle] = useState('')
   const [editDesc, setEditDesc] = useState('')
@@ -861,6 +876,18 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
     api<{ card: Card; frontmatter?: Record<string, unknown> }>(`/api/dsh-knowledge/card${query({ kb: kbId, slug })}`)
       .then((data) => { setCard(data.card); setCardFm(data.frontmatter ?? {}); setError(null) })
       .catch((err) => setError(String((err as Error).message ?? err)))
+    api<{ cards: CardMeta[] }>(`/api/dsh-knowledge/cards${query({ kb: kbId, limit: '500' })}`)
+      .then((list) => {
+        const index: Record<string, string> = {}
+        for (const entry of list.cards) {
+          const bySlug = entry.slug.trim().toLowerCase()
+          const byTitle = entry.title.trim().toLowerCase()
+          if (bySlug !== '') index[bySlug] = entry.slug
+          if (byTitle !== '') index[byTitle] = entry.slug
+        }
+        setCardIndex(index)
+      })
+      .catch(() => setCardIndex({}))
   }, [kbId, slug])
 
   const startEdit = (): void => {
@@ -890,6 +917,7 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
             description: editField.description.trim(),
             tags: splitFieldList(editField.tags),
             sources: splitFieldList(editField.sources),
+            related: splitFieldList(editField.related),
             frontmatter: buildFieldFrontmatter(editField),
             body: editBody,
           })
@@ -1032,6 +1060,32 @@ function CardDetail({ kbId, slug, onBack, onOpenCard, onDeleted }: {
             ))}</span>
           </div>
         )}
+        {(() => {
+          const relationValues = (key: string): string[] => {
+            const value = cardFm[key]
+            return Array.isArray(value) ? value.map((item) => String(item)).filter((item) => item.trim() !== '') : []
+          }
+          const rows = CARD_RELATION_ROWS.filter(({ key }) => relationValues(key).length > 0)
+          if (rows.length === 0) return null
+          return (
+            <div className={css.kvItem}>
+              <span className={css.kvKey}>🧬 {t(undefined, 'card.lineage')}:</span>
+              <span className={css.lineageBlock}>
+                {rows.map(({ key, labelKey }) => (
+                  <span key={key} className={css.lineageRow}>
+                    <span className={css.lineageKey}>{t(undefined, labelKey)}</span>
+                    {relationValues(key).map((value) => {
+                      const target = cardIndex[value.trim().toLowerCase()] ?? null
+                      return target !== null && target !== card.slug
+                        ? <button key={value} className={css.relatedLink} onClick={() => openFromSlug(target)}>{value}</button>
+                        : <span key={value} className={css.lineageExternal} title={t(undefined, 'card.externalTarget')}>{value}</span>
+                    })}
+                  </span>
+                ))}
+              </span>
+            </div>
+          )
+        })()}
       </div>
       <BodyText body={card.body} onOpen={openFromSlug} />
     </div>

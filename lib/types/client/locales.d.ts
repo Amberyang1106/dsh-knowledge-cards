@@ -115,6 +115,13 @@ declare const zh: {
     readonly 'card.back': "← 返回";
     readonly 'card.sources': "来源";
     readonly 'card.related': "关联";
+    readonly 'card.lineage': "血缘";
+    readonly 'card.dependsOn': "依赖";
+    readonly 'card.usedBy': "被使用";
+    readonly 'card.implementedIn': "实现于";
+    readonly 'card.governedBy': "受约束";
+    readonly 'card.externalTarget': "非卡片目标（外部表/报表等），不可跳转";
+    readonly 'field.related': "related（相关阅读，每行一条）";
     readonly 'card.tags': "标签";
     readonly 'card.delete': "删除";
     readonly 'card.delete.confirm': "删除卡片「{title}」？将移入回收站，可在「回收站」标签恢复。";
