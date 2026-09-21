@@ -269,4 +269,54 @@ export interface FieldMeta {
     /** Any additional frontmatter keys. */
     [key: string]: unknown;
 }
+/** One candidate change for one field card, with its evidence. */
+export interface LineageProposal {
+    /** Slug of the card to update. */
+    slug: string;
+    title: string;
+    /** Where the proposal came from. */
+    source: 'scan' | 'llm' | 'manual';
+    confidence: 'high' | 'medium' | 'low';
+    /** Human-readable evidence (quoted card text or metadata rule). */
+    evidence: string;
+    /** Relation keys to add (union with what the card already has). */
+    relations: Partial<Record<'depends_on' | 'used_by' | 'implemented_in' | 'governed_by', string[]>>;
+    /** Metadata keys to set (empty value = remove the key). */
+    metadata?: Record<string, unknown>;
+    /** Extra note surfaced in the preview (e.g. dangling target). */
+    note?: string;
+}
+/** Result of the deterministic lineage scan of one KB. */
+export interface LineageScanResult {
+    kb: string;
+    generatedAt: string;
+    fieldCards: number;
+    proposals: LineageProposal[];
+    notes: string[];
+}
+/** One accepted proposal's outcome after the deterministic apply. */
+export interface LineageAppliedCard {
+    slug: string;
+    title: string;
+    changed: string[];
+    relations: Record<string, string[]>;
+}
+/** Result of applying accepted proposals. */
+export interface LineageApplyResult {
+    kb: string;
+    applied: LineageAppliedCard[];
+    skipped: Array<{
+        slug: string;
+        reason: string;
+    }>;
+    generatedAt: string;
+}
+/** An agent-side lineage proposal batch parked for panel review. */
+export interface LineageProposalFile {
+    kb: string;
+    requestedAt: string;
+    childId?: string;
+    proposals: LineageProposal[];
+    notes: string[];
+}
 //# sourceMappingURL=types.d.ts.map

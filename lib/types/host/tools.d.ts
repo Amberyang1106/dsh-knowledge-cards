@@ -28,6 +28,7 @@ export declare function wikiImportCardsTool(): import("@deepseek-ai/dsh-tools").
 export declare function wikiCodeListTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
 export declare function wikiCodeReadTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
 export declare function wikiEditCardTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
+export declare function wikiLineageProposeTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
 export declare function wikiReviewSubmitTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
 export declare function wikiReviewsTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;
 export declare function wikiAuditTool(): import("@deepseek-ai/dsh-tools").ToolDefinition;

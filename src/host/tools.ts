@@ -25,6 +25,7 @@ import { isManagedFrontmatterKey, parseFrontmatter } from '../core/frontmatter.t
 import { searchCards } from '../core/search.ts'
 import type { PageInput } from '../core/types.ts'
 import { lintKb, renderLintReport } from './lint.ts'
+import { lineageProposalFile, writeLineageProposals } from './lineage.ts'
 import { auditKb } from './audit.ts'
 import {
   addReview, commitPages, createKb, deleteCard, deleteKb, editCard, getKb, importCards, kbSummary, listCards,
@@ -744,6 +745,89 @@ export function wikiEditCardTool() {
         relationSnapshot[key] = Array.isArray(value) ? value.map((item) => String(item)) : []
       }
       return { kb: resolved.id, slug: args.slug, changed: result.changed, title: result.card.title, relations: relationSnapshot }
+    },
+  })
+}
+
+export function wikiLineageProposeTool() {
+  return defineTool({
+    name: 'wiki_lineage_propose',
+    description: '提交一批**血缘补齐提案**（不修改卡片）：把候选的 depends_on / used_by / implemented_in / governed_by 边以及元数据修正建议写入该知识库的待审提案文件，用户在面板「卡片」tab 的「🧬 血缘补齐」预览里逐条勾选后再由确定性流程应用。用于：用户要求「补齐/体检字段血缘」时，你读完字段卡后把有证据的候选边一次提交，而不是直接改卡。每条提案必须给 evidence（引用卡内原文片段）与 confidence（high/medium/low）；没有证据的边不要提交。Triggers: 提交血缘提案、血缘补齐、字段血缘分析。',
+    parameters: {
+      kb: { type: 'string', description: '知识库 id（省略用默认库）。' },
+      proposals: {
+        type: 'array',
+        required: true,
+        description: '提案列表。',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            slug: { type: 'string', required: true, description: '要更新的字段卡 slug。' },
+            title: { type: 'string', description: '卡片标题（展示用）。' },
+            confidence: { type: 'string', description: 'high | medium | low。' },
+            evidence: { type: 'string', required: true, description: '证据：引用卡内原文或元数据事实。' },
+            relations: {
+              type: 'object',
+              additionalProperties: true,
+              description: '{ depends_on?: string[], used_by?: string[], implemented_in?: string[], governed_by?: string[] }（与现有值取并集）。',
+            },
+            metadata: { type: 'object', additionalProperties: true, description: '元数据修正建议（空串=删除该键）。' },
+            note: { type: 'string', description: '可选备注（如目标卡缺失）。' },
+          },
+        },
+      },
+      notes: { type: 'array', items: { type: 'string' }, description: '本次分析的总体说明（可含无法建边的观察）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kb: { type: 'string', required: true },
+          count: { type: 'integer', required: true },
+          file: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value: { kb: string; count: number; file: string }) => {
+        return text(`已提交 ${value.count} 条血缘提案到「${value.kb}」（未修改任何卡片）。请在面板「卡片」tab 点「🧬 血缘补齐」查看预览并勾选应用。`)
+      },
+    },
+    async execute(args: {
+      kb?: string
+      proposals: Array<{ slug: string; title?: string; confidence?: string; evidence: string; relations?: Record<string, unknown>; metadata?: Record<string, unknown>; note?: string }>
+      notes?: string[]
+    }) {
+      const resolved = await resolveKb(args.kb)
+      if (resolved === null) throw new Error('尚无知识库。先 wiki_create_kb 建库。')
+      const kb = await getKb(resolved.id)
+      if (kb === null) throw new Error(`unknown knowledge base: ${resolved.id}`)
+      if (!Array.isArray(args.proposals) || args.proposals.length === 0) throw new Error('proposals 不能为空。')
+      const RELATION_KEYS = ['depends_on', 'used_by', 'implemented_in', 'governed_by'] as const
+      const proposals = args.proposals.map((item) => {
+        const relations: Record<string, string[]> = {}
+        for (const key of RELATION_KEYS) {
+          const value = item.relations?.[key]
+          if (value === undefined) continue
+          const list = Array.isArray(value)
+            ? value.map((entry) => String(entry).trim()).filter((entry) => entry !== '')
+            : String(value).split(/[\n,]/).map((entry) => entry.trim()).filter((entry) => entry !== '')
+          if (list.length > 0) relations[key] = [...new Set(list)]
+        }
+        const confidence: 'high' | 'medium' | 'low' = item.confidence === 'high' || item.confidence === 'low' ? item.confidence : 'medium'
+        return {
+          slug: String(item.slug).trim(),
+          title: item.title !== undefined ? String(item.title) : String(item.slug),
+          source: 'llm' as const,
+          confidence,
+          evidence: String(item.evidence ?? '').trim(),
+          relations,
+          metadata: item.metadata,
+          note: item.note,
+        }
+      }).filter((item) => item.slug !== '')
+      await writeLineageProposals(kb, proposals, { notes: args.notes })
+      return { kb: resolved.id, count: proposals.length, file: lineageProposalFile(kb) }
     },
   })
 }

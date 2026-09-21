@@ -377,6 +377,207 @@ function BodyText({ body, onOpen }: { body: string; onOpen: (slug: string) => vo
 }
 
 // ---------------------------------------------------------------------------
+// lineage assist panel (field cards): deterministic scan + optional agent run
+// → preview → apply
+// ---------------------------------------------------------------------------
+
+interface LineageProposalFace {
+  slug: string
+  title: string
+  source: string
+  confidence: string
+  evidence: string
+  relations: Record<string, string[]>
+  metadata?: Record<string, unknown>
+  note?: string
+}
+
+interface LineageRow extends LineageProposalFace {
+  key: string
+  selected: boolean
+}
+
+function lineageRowKey(proposal: LineageProposalFace): string {
+  return `${proposal.slug}|${proposal.source}|${proposal.evidence.slice(0, 60)}|${JSON.stringify(proposal.relations)}`
+}
+
+function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () => void; onApplied: () => void }): ReactElement {
+  const [rows, setRows] = useState<LineageRow[]>([])
+  const [notes, setNotes] = useState<string[]>([])
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [status, setStatus] = useState<string | null>(null)
+  const [fieldCards, setFieldCards] = useState<number | null>(null)
+  const [llmInfo, setLlmInfo] = useState<string | null>(null)
+
+  const mergeProposals = useCallback((incoming: LineageProposalFace[], extraNotes: string[] = []): void => {
+    setRows((current) => {
+      const seen = new Set(current.map((row) => row.key))
+      const added: LineageRow[] = []
+      for (const proposal of incoming) {
+        const key = lineageRowKey(proposal)
+        if (seen.has(key)) continue
+        seen.add(key)
+        added.push({ ...proposal, key, selected: proposal.confidence !== 'low' })
+      }
+      return [...current, ...added]
+    })
+    if (extraNotes.length > 0) setNotes((current) => [...new Set([...current, ...extraNotes])])
+  }, [])
+
+  const scan = async (): Promise<void> => {
+    setBusy('scan')
+    setError(null)
+    setStatus(null)
+    try {
+      const data = await api<{ result: { fieldCards: number; proposals: LineageProposalFace[]; notes: string[] } }>('/api/dsh-knowledge/lineage/scan', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kbId }),
+      })
+      mergeProposals(data.result.proposals, data.result.notes)
+      setFieldCards(data.result.fieldCards)
+      setStatus(t(undefined, 'lineage.scanDone', { n: data.result.proposals.length, cards: data.result.fieldCards }))
+    } catch (err) {
+      setError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const runAgent = async (): Promise<void> => {
+    setBusy('run')
+    setError(null)
+    setStatus(t(undefined, 'lineage.running'))
+    try {
+      const data = await api<{ childId?: string; provider?: string; requestedAt?: string }>('/api/dsh-knowledge/lineage/run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kbId }),
+      })
+      setStatus(t(undefined, 'lineage.runStarted', { child: String(data.childId ?? '').slice(0, 8), provider: String(data.provider ?? '') }))
+      const since = data.requestedAt ?? ''
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 3000))
+        const polled = await api<{ proposals: { requestedAt?: string; proposals: LineageProposalFace[]; notes?: string[] } | null }>(
+          `/api/dsh-knowledge/lineage/proposals${query({ kb: kbId })}`,
+        )
+        const file = polled.proposals
+        if (file !== null && Array.isArray(file.proposals) && file.proposals.length > 0 && (file.requestedAt ?? '') >= since) {
+          mergeProposals(file.proposals, file.notes ?? [])
+          setStatus(t(undefined, 'lineage.llmDone', { n: file.proposals.length }))
+          return
+        }
+      }
+      setStatus(t(undefined, 'lineage.llmTimeout'))
+    } catch (err) {
+      const message = String((err as Error).message ?? err)
+      setError(message.includes('llm-unavailable') ? t(undefined, 'lineage.llmUnavailable') : message)
+      setStatus(null)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const apply = async (): Promise<void> => {
+    const accepted = rows.filter((row) => row.selected)
+    if (accepted.length === 0) return
+    setBusy('apply')
+    setError(null)
+    try {
+      const data = await api<{ result: { applied: Array<{ slug: string }>; skipped: Array<{ slug: string }> } }>('/api/dsh-knowledge/lineage/apply', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kbId, accepted: accepted.map((row) => ({
+          slug: row.slug, title: row.title, evidence: row.evidence, relations: row.relations, metadata: row.metadata,
+        })) }),
+      })
+      setStatus(t(undefined, 'lineage.applied', { n: data.result.applied.length, skipped: data.result.skipped.length }))
+      setRows((current) => current.filter((row) => !row.selected))
+      onApplied()
+    } catch (err) {
+      setError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  useEffect(() => {
+    api<{ subagentsAvailable: boolean; providerNames: string[] | null }>('/api/dsh-knowledge/lineage/llm-status')
+      .then((data) => setLlmInfo(data.subagentsAvailable
+        ? t(undefined, 'lineage.llmReady', { providers: (data.providerNames ?? []).join(', ') || 'default' })
+        : t(undefined, 'lineage.llmUnavailable')))
+      .catch(() => setLlmInfo(null))
+  }, [])
+
+  const relationSummary = (row: LineageRow): string => Object.entries(row.relations)
+    .filter(([, values]) => values.length > 0)
+    .map(([key, values]) => `${key} += ${values.join(', ')}`)
+    .concat(Object.entries(row.metadata ?? {}).map(([key, value]) => `${key} = ${String(value === '' ? '(清除)' : value)}`))
+    .join('；')
+
+  return (
+    <div>
+      <div className={css.detailHeader}>
+        <button className={css.back} onClick={onClose}>{t(undefined, 'card.back')}</button>
+      </div>
+      <h2 className={css.detailTitle}>🧬 {t(undefined, 'lineage.title')}</h2>
+      <p className={css.note}>{t(undefined, 'lineage.hint')}</p>
+      <div className={css.controls}>
+        <button className={css.run} disabled={busy !== null} onClick={() => void scan()}>{busy === 'scan' ? '…' : t(undefined, 'lineage.scan')}</button>
+        <button className={css.runSmall} disabled={busy !== null} onClick={() => void runAgent()}>{busy === 'run' ? '…' : t(undefined, 'lineage.run')}</button>
+        <button className={css.runSmall} disabled={busy !== null || rows.every((row) => !row.selected)} onClick={() => void apply()}>
+          {busy === 'apply' ? '…' : t(undefined, 'lineage.apply', { n: rows.filter((row) => row.selected).length })}
+        </button>
+        <span className={css.hint}>{llmInfo ?? ''}</span>
+      </div>
+      {status !== null && <div className={css.lintResult}>{status}</div>}
+      {error !== null && <div className={css.error}>{error}</div>}
+      {rows.length === 0 && busy === null && <div className={css.empty}>{t(undefined, 'lineage.empty')}</div>}
+      {rows.length > 0 && (
+        <table className={css.table}>
+          <thead>
+            <tr>
+              <th />
+              <th>{t(undefined, 'lineage.colCard')}</th>
+              <th>{t(undefined, 'lineage.colChange')}</th>
+              <th>{t(undefined, 'lineage.colConfidence')}</th>
+              <th>{t(undefined, 'lineage.colEvidence')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.key}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={row.selected}
+                    onChange={(event) => setRows((current) => current.map((item) => item.key === row.key ? { ...item, selected: event.target.checked } : item))}
+                  />
+                </td>
+                <td>
+                  <div>{row.title || row.slug}</div>
+                  <div className={css.mono}>{row.source}</div>
+                </td>
+                <td className={css.mono}>{relationSummary(row)}</td>
+                <td>{row.confidence}</td>
+                <td>{row.evidence}{row.note !== undefined ? `（${row.note}）` : ''}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {notes.length > 0 && (
+        <div className={css.kv}>
+          {notes.map((note) => <div key={note} className={css.kvItem}><span className={css.kvKey}>提示</span><span>{note}</span></div>)}
+        </div>
+      )}
+      {fieldCards !== null && <div className={css.hint}>{t(undefined, 'lineage.fieldCards', { n: fieldCards })}</div>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // cards tab
 // ---------------------------------------------------------------------------
 
@@ -433,6 +634,7 @@ function CardsTab({
   const [savingDraft, setSavingDraft] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [createdNote, setCreatedNote] = useState<string | null>(null)
+  const [lineageOpen, setLineageOpen] = useState(false)
 
   const isYamlDraft = YAML_EDITOR_TYPES.includes(draftType)
   const isFieldDraft = draftType === 'field'
@@ -576,6 +778,10 @@ function CardsTab({
     )
   }
 
+  if (lineageOpen) {
+    return <LineagePanel kbId={kbId} onClose={() => setLineageOpen(false)} onApplied={() => load(search, typeFilter)} />
+  }
+
   return (
     <div>
       <div className={css.controls}>
@@ -586,6 +792,7 @@ function CardsTab({
           onChange={(event) => setSearch(event.target.value)}
         />
         <button className={css.run} onClick={openCreate}>+ {t(undefined, 'cards.create')}</button>
+        <button className={css.runSmall} title={t(undefined, 'lineage.hint')} onClick={() => setLineageOpen(true)}>🧬 {t(undefined, 'lineage.button')}</button>
       </div>
       <div className={css.chips}>
         {TYPE_FILTERS.map((filter) => (

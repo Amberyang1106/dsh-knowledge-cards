@@ -24,8 +24,8 @@ import { registerKnowledgeRoutes } from './host/routes.ts'
 import {
   wikiAuditTool, wikiCardDeleteTool, wikiCardPurgeTool, wikiCardRestoreTool, wikiCodeListTool, wikiCodeReadTool,
   wikiCommitTool, wikiCreateKbTool, wikiEditCardTool, wikiImportCardsTool, wikiIngestTool, wikiKbDeleteTool,
-  wikiKbPurgeTool, wikiKbRestoreTool, wikiKbsTool, wikiLintTool, wikiReadTool, wikiReviewSubmitTool,
-  wikiReviewsTool, wikiSearchTool, wikiTrashListTool,
+  wikiKbPurgeTool, wikiKbRestoreTool, wikiKbsTool, wikiLintTool, wikiLineageProposeTool, wikiReadTool,
+  wikiReviewSubmitTool, wikiReviewsTool, wikiSearchTool, wikiTrashListTool,
 } from './host/tools.ts'
 
 /** Required services: the route registry, the tool registry, and the prompt band. */
@@ -72,6 +72,7 @@ export function apply(ctx: Context): void {
       wikiKbRestoreTool(),
       wikiKbPurgeTool(),
       wikiTrashListTool(),
+      wikiLineageProposeTool(),
     ].map((tool) => ctx.tools.register(tool))
     return () => { for (const dispose of disposers) dispose() }
   }, 'dsh-knowledge-cards: wiki_* tools')

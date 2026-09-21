@@ -77,7 +77,7 @@ describe('knowledge routes over HTTP', () => {
     process.env.DSH_KNOWLEDGE_CARDS_ROOT = root
     const { ctx, routes } = makeStubCtx()
     apply(ctx as never)
-    expect(routes.length).toBe(26)
+    expect(routes.length).toBe(31)
     server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const route = routes.find((candidate) => candidate.kind === 'exact' && candidate.path === url.pathname)
@@ -565,6 +565,52 @@ describe('knowledge routes over HTTP', () => {
     // the edit is visible on the 看板 with its own note
     const log = await jsonRequest(port, 'GET', `/api/dsh-knowledge/log?kb=${encodeURIComponent(fkbId)}&action=edit`)
     expect((log.data.entries as Array<{ notes: string[] }>).some((entry) => entry.notes.some((note) => note.includes('字段元数据')))).toBe(true)
+  })
+
+  it('runs the lineage button path: deterministic scan → apply → lint clean', async () => {
+    const created = await jsonRequest(port, 'POST', '/api/dsh-knowledge/kbs', { name: '血缘按钮库' })
+    const lkbId = (created.data.kb as { id: string }).id
+    const seed = async (title: string, body: string, frontmatter: Record<string, unknown>): Promise<void> => {
+      const res = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/create', {
+        kb: lkbId, type: 'field', title, description: `${title} 定义`, frontmatter, body,
+      })
+      expect(res.data.ok).toBe(true)
+    }
+    await seed('Premium Mix %', 'step 1: by Premium Revenue get amount from <fact_tbl>.', { field_kind: 'measure', status: 'active' })
+    await seed('Premium Revenue', 'revenue base amount.', { field_kind: 'measure', status: 'active' })
+    await seed('Legacy Dim', 'dimension text.', { field_kind: 'dimension', aggregation: 'additive', source_table: 'PBI', status: 'active' })
+
+    const scan = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/scan', { kb: lkbId })
+    expect(scan.data.ok).toBe(true)
+    const scanResult = scan.data.result as { fieldCards: number; proposals: Array<{ slug: string; relations: Record<string, string[]>; metadata?: Record<string, unknown> }> }
+    expect(scanResult.fieldCards).toBe(3)
+    expect(scanResult.proposals.length).toBeGreaterThan(0)
+    expect(scanResult.proposals.some((proposal) => JSON.stringify(proposal.relations).includes('depends_on'))).toBe(true)
+
+    const applied = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/apply', { kb: lkbId, accepted: scanResult.proposals })
+    expect(applied.data.ok).toBe(true)
+    const applyResult = applied.data.result as { applied: Array<{ slug: string }> }
+    expect(applyResult.applied.length).toBeGreaterThan(0)
+
+    const mix = await jsonRequest(port, 'GET', `/api/dsh-knowledge/card?kb=${encodeURIComponent(lkbId)}&slug=Premium-Mix`)
+    const mixFm = mix.data.frontmatter as Record<string, unknown>
+    expect(mixFm.depends_on).toContain('Premium-Revenue')
+    expect(mixFm.review_status).toBe('inferred')
+    const revenue = await jsonRequest(port, 'GET', `/api/dsh-knowledge/card?kb=${encodeURIComponent(lkbId)}&slug=Premium-Revenue`)
+    expect((revenue.data.frontmatter as Record<string, unknown>).used_by).toContain('Premium-Mix')
+
+    const legacy = await jsonRequest(port, 'GET', `/api/dsh-knowledge/card?kb=${encodeURIComponent(lkbId)}&slug=Legacy-Dim`)
+    const legacyFm = legacy.data.frontmatter as Record<string, unknown>
+    expect(legacyFm.source_table).toBeUndefined()
+    expect(legacyFm.aggregation).toBe('non-additive')
+
+    const lint = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lint', { kb: lkbId })
+    const issues = lint.data.issues as Array<{ kind: string }>
+    expect(issues.filter((issue) => issue.kind.startsWith('relation-'))).toHaveLength(0)
+
+    const proposals = await jsonRequest(port, 'GET', `/api/dsh-knowledge/lineage/proposals?kb=${encodeURIComponent(lkbId)}`)
+    expect(proposals.data.ok).toBe(true)
+    expect(proposals.data.proposals).toBeNull()
   })
 
   it('deletes a knowledge base to the trash and restores it with its review queue', async () => {

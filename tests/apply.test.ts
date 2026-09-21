@@ -41,8 +41,8 @@ describe('host apply (boot path)', () => {
     const { ctx, routes, tools, sections } = makeCtx()
     expect(() => apply(ctx as never)).not.toThrow()
 
-    // 26 exact routes under /api/dsh-knowledge (one handler per path, method-dispatched).
-    expect(routes).toHaveLength(26)
+    // 31 exact routes under /api/dsh-knowledge (one handler per path, method-dispatched).
+    expect(routes).toHaveLength(31)
     const paths = routes.map((route) => (route as { path?: string }).path)
     expect(paths).toEqual([
       '/api/dsh-knowledge/kbs',
@@ -71,15 +71,20 @@ describe('host apply (boot path)', () => {
       '/api/dsh-knowledge/kbs/purge',
       '/api/dsh-knowledge/trash',
       '/api/dsh-knowledge/rules',
+      '/api/dsh-knowledge/lineage/scan',
+      '/api/dsh-knowledge/lineage/llm-status',
+      '/api/dsh-knowledge/lineage/run',
+      '/api/dsh-knowledge/lineage/proposals',
+      '/api/dsh-knowledge/lineage/apply',
     ])
     for (const route of routes) {
       expect((route as { kind?: string }).kind).toBe('exact')
     }
 
-    // 21 agent tools.
-    expect(tools).toHaveLength(21)
+    // 22 agent tools.
+    expect(tools).toHaveLength(22)
     const names = tools.map((tool) => (tool as { name?: string }).name).sort()
-    expect(names).toEqual(['wiki_audit', 'wiki_card_delete', 'wiki_card_purge', 'wiki_card_restore', 'wiki_code_list', 'wiki_code_read', 'wiki_commit', 'wiki_create_kb', 'wiki_edit_card', 'wiki_import_cards', 'wiki_ingest', 'wiki_kb_delete', 'wiki_kb_purge', 'wiki_kb_restore', 'wiki_kbs', 'wiki_lint', 'wiki_read', 'wiki_review_submit', 'wiki_reviews', 'wiki_search', 'wiki_trash_list'])
+    expect(names).toEqual(['wiki_audit', 'wiki_card_delete', 'wiki_card_purge', 'wiki_card_restore', 'wiki_code_list', 'wiki_code_read', 'wiki_commit', 'wiki_create_kb', 'wiki_edit_card', 'wiki_import_cards', 'wiki_ingest', 'wiki_kb_delete', 'wiki_kb_purge', 'wiki_kb_restore', 'wiki_kbs', 'wiki_lineage_propose', 'wiki_lint', 'wiki_read', 'wiki_review_submit', 'wiki_reviews', 'wiki_search', 'wiki_trash_list'])
 
     // One system-prompt announcement.
     expect(sections).toHaveLength(1)

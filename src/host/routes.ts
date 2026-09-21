@@ -14,6 +14,7 @@ import type { CardMeta, PageInput } from '../core/types.ts'
 import { searchCards } from '../core/search.ts'
 import { auditKb, buildDeepAuditPromptForKb } from './audit.ts'
 import { lintKb } from './lint.ts'
+import { applyLineage, buildLineagePrompt, listFieldCardMeta, readLineageProposals, scanLineage } from './lineage.ts'
 import { compileRuleSet } from './rules.ts'
 import {
   addReview, commitPages, createCard, createKb, deleteCard, deleteCodeFile, deleteKb, editCard, getKb, importCards,
@@ -759,6 +760,153 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
             ruleSet: ruleSet !== '' ? ruleSet : undefined,
             status: status !== '' ? status : undefined,
           }))
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
+        }
+      },
+    },
+    // ------------------------------------------------------------ lineage assist (panel button)
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/lineage/scan',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          ok(res, { result: await scanLineage(kb) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
+        }
+      },
+    },
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/lineage/llm-status',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'GET') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const subagents = (ctx as unknown as { subagents?: Record<string, unknown> }).subagents
+          const methods = subagents === undefined ? [] : Object.keys(subagents).filter((key) => typeof (subagents as Record<string, unknown>)[key] === 'function')
+          let providerNames: string[] | null = null
+          const listProviders = subagents?.listProviders
+          if (typeof listProviders === 'function') {
+            try {
+              const listed = await (listProviders as () => Promise<unknown>).call(subagents)
+              if (Array.isArray(listed)) {
+                providerNames = listed.map((entry) => (typeof entry === 'string' ? entry : String((entry as { name?: unknown })?.name ?? ''))).filter((name) => name !== '')
+              }
+            } catch {
+              providerNames = null
+            }
+          }
+          ok(res, {
+            subagentsAvailable: typeof subagents?.startContinuable === 'function',
+            methods,
+            providerNames,
+          })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
+        }
+      },
+    },
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/lineage/run',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          const cards = await listFieldCardMeta(kb)
+          if (cards.length === 0) return json(res, { ok: false, error: '该知识库没有字段卡（type=field），无需血缘补齐' }, 400)
+          const subagents = (ctx as unknown as { subagents?: Record<string, unknown> }).subagents
+          const start = subagents?.startContinuable
+          if (typeof start !== 'function') {
+            return json(res, {
+              ok: false,
+              error: 'llm-unavailable',
+              detail: '宿主未提供 subagents 服务，无法发起 AI 分析；可先用确定性预扫，或到会话里让 agent 补齐',
+            }, 503)
+          }
+          let provider = asString(body?.provider).trim()
+          if (provider === '') {
+            const listProviders = subagents?.listProviders
+            if (typeof listProviders === 'function') {
+              try {
+                const listed = await (listProviders as () => Promise<unknown>).call(subagents)
+                if (Array.isArray(listed) && listed.length > 0) {
+                  const first = listed[0]
+                  provider = typeof first === 'string' ? first : String((first as { name?: unknown })?.name ?? '')
+                }
+              } catch {
+                provider = ''
+              }
+            }
+          }
+          if (provider === '') provider = 'spawn'
+          const requestedAt = new Date().toISOString()
+          const controller = new AbortController()
+          const started = await (start as (spec: unknown) => Promise<{ childId: unknown }>).call(subagents, {
+            provider,
+            label: `血缘补齐 · ${kb.id}`,
+            request: { prompt: buildLineagePrompt(kb, cards) },
+            signal: controller.signal,
+          })
+          ok(res, { started: true, childId: String(started.childId), provider, requestedAt, fieldCards: cards.length })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
+        }
+      },
+    },
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/lineage/proposals',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'GET') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const url = new URL(req.url ?? '/', 'http://localhost')
+          const kbId = queryParam(url, 'kb')
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          ok(res, { proposals: await readLineageProposals(kb) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
+        }
+      },
+    },
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/lineage/apply',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          const rawAccepted = Array.isArray(body?.accepted) ? body.accepted : []
+          const accepted = rawAccepted.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+          if (accepted.length === 0) return json(res, { ok: false, error: 'accepted 不能为空' }, 400)
+          const proposals = accepted.map((entry) => ({
+            slug: asString(entry.slug),
+            title: asString(entry.title),
+            source: 'manual' as const,
+            confidence: 'high' as const,
+            evidence: asString(entry.evidence),
+            relations: (typeof entry.relations === 'object' && entry.relations !== null ? entry.relations : {}) as Record<string, string[]>,
+            metadata: (typeof entry.metadata === 'object' && entry.metadata !== null ? entry.metadata : undefined) as Record<string, unknown> | undefined,
+          })).filter((entry) => entry.slug !== '')
+          ok(res, { result: await applyLineage(kb, proposals) })
         } catch (error) {
           json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
         }
