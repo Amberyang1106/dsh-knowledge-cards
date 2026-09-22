@@ -70,10 +70,10 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 > ⚠️ **仓库为私有**：安装前需先被授予该仓库的读权限（维护者将你加为 GitHub 协作者，或你已在组织的允许列表内）。首次安装时 git 会弹出 GitHub 登录，用你自己的账号登录即可；未授权时会报 `Authentication failed` / `could not read Username`。
 
 ```sh
-dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.1
+dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.2
 ```
 
-> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.4.1` 换成新 tag。
+> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.4.2` 换成新 tag。
 
 重启 `dsh web`，侧边栏出现「知识卡片」。你的知识库数据在 `~/.dsh/knowledge-cards/`，安装/升级/卸载插件均不影响。
 
@@ -103,7 +103,7 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 | 模式 | 命令 | 用途 |
 |---|---|---|
 | 开发模式（link:） | `dsh plugin --profile web add C:/Users/yangtt16/dsh-knowledge-cards` | 日常开发：改代码 → build → 重启即生效 |
-| 发布验证模式（github spec） | `dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.1` | 验证用户视角的安装；与 README 安装命令一致 |
+| 发布验证模式（github spec） | `dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.2` | 验证用户视角的安装；与 README 安装命令一致 |
 | 卸载 | `dsh plugin --profile web remove @amberyang1106/dsh-knowledge-cards` | 移除依赖与 bundles 条目 |
 
 原理：`dsh plugin` 把参数转发给 profile 目录里的 pnpm，成功后自动 reconcile `dsh.profile.bundles`——同名包增删 spec 不会双重挂载。
@@ -122,9 +122,9 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 2. 更新 README（功能变化、Roadmap 里已完成项勾掉）
 3. **同步本地 dsh-wiki 工作区 README**（`C:\Users\yangtt16\OneDrive - Lenovo\AI Test\Finance KM\dsh-wiki\README.md`）：功能特性 / 路由数 / 工具数 / 面板 tab / 测试数 / Changelog / 后续计划，与本仓库 README、CHANGELOG.md 保持口径一致
 4. `pnpm build` 确保 `lib/` 同步 → `git add -A && git commit`
-5. `git tag v0.4.1 && git push && git push --tags`
-6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.1` → 重启验证 → 再切回 link: 开发
-7. 更新 GitHub Release（`gh release create v0.4.1 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.4.1` 重装
+5. `git tag v0.4.2 && git push && git push --tags`
+6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.2` → 重启验证 → 再切回 link: 开发
+7. 更新 GitHub Release（`gh release create v0.4.2 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.4.2` 重装
 
 ### 关键注意点
 
@@ -138,7 +138,7 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 以下能力当前**尚未实现**，供使用者了解功能边界：
 
 - **审核队列的 agent 代为处理**：当前 `reviews/resolve` 仅面板「审核」tab 可用（预定义操作 + 预生成搜索查询），agent 只能 `wiki_review_submit` 提交、`wiki_reviews` 查看，不能直接 resolve / 跳过——规划中让 agent 能按用户指示代为处理审核项。
-- **血缘图谱与 Impact Analysis 接口**：结构化血缘（depends_on / used_by / implemented_in / governed_by）与面板预览已就绪，但还缺「给一个字段 → 返回受影响字段/报表」的图查询接口与可视化；此外「🧬 血缘补齐」的 ② AI 分析分支（宿主 `subagents` 路径）在作者环境尚未实机验证 provider 解析，当前以确定性预扫为主。
+- **血缘图谱与 Impact Analysis 接口**：结构化血缘（depends_on / used_by / implemented_in / governed_by）与面板预览已就绪，但还缺「给一个字段 → 返回受影响字段/报表」的图查询接口与可视化；此外 ② AI 分析的「宿主自动 spawn」路径受限于 DSH 要求 parent agent，当前以「一键复制指令 + 会话内执行」实现。
 - **资料源在线上传**：当前 `raw/sources/` 需手动放入文件（面板「代码」tab 已支持上传而「资料」tab 未支持）；规划中支持资料拖拽上传 + 自动入待摄入清单。
 - **知识库导出 / 备份**：当前无导出接口（备份 = 直接拷贝 `~/.dsh/knowledge-cards/` 目录）；规划中提供 JSON / Markdown 导出与一键备份。
 - **知识图谱 / 卡片关系可视化**：`[[wikilink]]` 交叉引用与结构化血缘数据已具备，但无可视化；规划中做卡片关系图谱。

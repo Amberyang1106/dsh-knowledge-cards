@@ -92,7 +92,9 @@ declare const zh: {
     readonly 'lineage.title': "字段血缘补齐";
     readonly 'lineage.hint': "先「确定性预扫」从卡内正文/元数据挖候选边（零成本、不改卡）；需要语义判断时点「AI 分析」——它发起一次 agent 运行读全库字段卡并把提案写入待审文件（消耗 token，卡片内容会外发给所配模型）。所有候选都在下方预览，勾选后点「应用选中」才真正写卡（标 inferred，已 confirmed 的卡不会被降级）。";
     readonly 'lineage.scan': "① 确定性预扫";
-    readonly 'lineage.run': "② AI 分析";
+    readonly 'lineage.run': "② AI 分析（会话内）";
+    readonly 'lineage.preparing': "正在生成血缘分析指令…";
+    readonly 'lineage.promptCopied': "已复制血缘分析指令 → 粘贴到当前会话发送；agent 用 wiki_lineage_propose 提交后，本面板会自动出现提案（请保持本页打开，最多等待 2 分钟）。";
     readonly 'lineage.apply': "应用选中（{n}）";
     readonly 'lineage.empty': "暂无候选。先点「① 确定性预扫」，或点「② AI 分析」让 agent 补语义关系。";
     readonly 'lineage.scanDone': "预扫完成：{cards} 张字段卡，产出 {n} 条候选。";
@@ -101,7 +103,7 @@ declare const zh: {
     readonly 'lineage.llmDone': "AI 分析完成：新增 {n} 条候选。";
     readonly 'lineage.llmTimeout': "等待超时：agent 可能仍在运行，稍后重新打开本面板即可读到提案（提案落在待审文件里）。";
     readonly 'lineage.llmUnavailable': "宿主未提供 subagents 服务，AI 分析不可用；请用确定性预扫，或到会话里让 agent 补齐。";
-    readonly 'lineage.llmReady': "AI 可用（provider: {providers}）";
+    readonly 'lineage.llmReady': "AI 分析：会话内执行（一键复制指令）";
     readonly 'lineage.applied': "已应用 {n} 条（跳过 {skipped} 条），看板可查明细。";
     readonly 'lineage.fieldCards': "本库字段卡：{n} 张";
     readonly 'lineage.colCard': "卡片";

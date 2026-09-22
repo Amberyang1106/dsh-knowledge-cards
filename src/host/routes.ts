@@ -790,27 +790,17 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
         if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
         if (req.method !== 'GET') return json(res, { error: `method not allowed: ${req.method}` }, 405)
         try {
-          // Optional service: cordis forbids plain ctx.<name> access for
-          // undeclared services, so read it through the reflection API which
-          // returns undefined instead of throwing (and never hard-requires it).
+          // Informational only: spawning a subagent needs a parent Agent (an
+          // agent turn) which an HTTP route cannot supply, so the AI branch
+          // works by handing a prompt to the user's session. The service is
+          // read through the reflection API because cordis forbids plain
+          // ctx.<name> access for undeclared services.
           const subagents = ctx.reflect.get('subagents', false) as Record<string, unknown> | undefined
           const methods = subagents === undefined ? [] : Object.keys(subagents).filter((key) => typeof (subagents as Record<string, unknown>)[key] === 'function')
-          let providerNames: string[] | null = null
-          const listProviders = subagents?.listProviders
-          if (typeof listProviders === 'function') {
-            try {
-              const listed = await (listProviders as () => Promise<unknown>).call(subagents)
-              if (Array.isArray(listed)) {
-                providerNames = listed.map((entry) => (typeof entry === 'string' ? entry : String((entry as { name?: unknown })?.name ?? ''))).filter((name) => name !== '')
-              }
-            } catch {
-              providerNames = null
-            }
-          }
           ok(res, {
-            subagentsAvailable: typeof subagents?.startContinuable === 'function',
+            promptMode: true,
+            spawnAvailable: typeof subagents?.startContinuable === 'function',
             methods,
-            providerNames,
           })
         } catch (error) {
           json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
@@ -830,40 +820,16 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
           if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
           const cards = await listFieldCardMeta(kb)
           if (cards.length === 0) return json(res, { ok: false, error: '该知识库没有字段卡（type=field），无需血缘补齐' }, 400)
-          const subagents = ctx.reflect.get('subagents', false) as Record<string, unknown> | undefined
-          const start = subagents?.startContinuable
-          if (typeof start !== 'function') {
-            return json(res, {
-              ok: false,
-              error: 'llm-unavailable',
-              detail: '宿主未提供 subagents 服务，无法发起 AI 分析；可先用确定性预扫，或到会话里让 agent 补齐',
-            }, 503)
-          }
-          let provider = asString(body?.provider).trim()
-          if (provider === '') {
-            const listProviders = subagents?.listProviders
-            if (typeof listProviders === 'function') {
-              try {
-                const listed = await (listProviders as () => Promise<unknown>).call(subagents)
-                if (Array.isArray(listed) && listed.length > 0) {
-                  const first = listed[0]
-                  provider = typeof first === 'string' ? first : String((first as { name?: unknown })?.name ?? '')
-                }
-              } catch {
-                provider = ''
-              }
-            }
-          }
-          if (provider === '') provider = 'spawn'
-          const requestedAt = new Date().toISOString()
-          const controller = new AbortController()
-          const started = await (start as (spec: unknown) => Promise<{ childId: unknown }>).call(subagents, {
-            provider,
-            label: `血缘补齐 · ${kb.id}`,
-            request: { prompt: buildLineagePrompt(kb, cards) },
-            signal: controller.signal,
+          // In-session execution: hand back the prepared prompt for the panel to
+          // pass to the user's session. The agent reads the field cards and
+          // parks proposals via wiki_lineage_propose; the panel polls
+          // /lineage/proposals and merges them into the same preview.
+          ok(res, {
+            mode: 'prompt',
+            prompt: buildLineagePrompt(kb, cards),
+            requestedAt: new Date().toISOString(),
+            fieldCards: cards.length,
           })
-          ok(res, { started: true, childId: String(started.childId), provider, requestedAt, fieldCards: cards.length })
         } catch (error) {
           json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
         }

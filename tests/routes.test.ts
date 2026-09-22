@@ -620,18 +620,22 @@ describe('knowledge routes over HTTP', () => {
     expect(proposals.data.ok).toBe(true)
     expect(proposals.data.proposals).toBeNull()
 
-    // AI branch availability probe: an undeclared subagents service reads as
-    // unavailable instead of throwing (this is what broke with a plain ctx.x
-    // access — cordis rejects it with "cannot get property … without inject").
+    // AI branch probe: reads the optional subagents service through the
+    // reflection API (an undeclared service must not throw) and reports that
+    // the AI branch runs as a prompt handed to the user's session.
     const llmStatus = await jsonRequest(port, 'GET', '/api/dsh-knowledge/lineage/llm-status')
     expect(llmStatus.status).toBe(200)
     expect(llmStatus.data.ok).toBe(true)
-    expect(llmStatus.data.subagentsAvailable).toBe(false)
+    expect(llmStatus.data.promptMode).toBe(true)
+    expect(llmStatus.data.spawnAvailable).toBe(false)
 
-    // …and starting a run degrades to a clear 503 message rather than crashing
+    // …and the run endpoint hands back the prepared prompt (in-session mode)
     const runAttempt = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/run', { kb: lkbId })
-    expect(runAttempt.status).toBe(503)
-    expect(String(runAttempt.data.error)).toBe('llm-unavailable')
+    expect(runAttempt.status).toBe(200)
+    expect(runAttempt.data.mode).toBe('prompt')
+    const prompt = String(runAttempt.data.prompt)
+    expect(prompt).toContain('wiki_lineage_propose')
+    expect(prompt).toContain(lkbId)
   })
 
   it('deletes a knowledge base to the trash and restores it with its review queue', async () => {

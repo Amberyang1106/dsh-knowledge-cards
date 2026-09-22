@@ -451,14 +451,20 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
   const runAgent = async (): Promise<void> => {
     setBusy('run')
     setError(null)
-    setStatus(t(undefined, 'lineage.running'))
+    setStatus(t(undefined, 'lineage.preparing'))
     try {
-      const data = await api<{ childId?: string; provider?: string; requestedAt?: string }>('/api/dsh-knowledge/lineage/run', {
+      const data = await api<{ mode?: string; prompt?: string; requestedAt?: string }>('/api/dsh-knowledge/lineage/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ kb: kbId }),
       })
-      setStatus(t(undefined, 'lineage.runStarted', { child: String(data.childId ?? '').slice(0, 8), provider: String(data.provider ?? '') }))
+      const prompt = data.prompt ?? ''
+      try {
+        await navigator.clipboard.writeText(prompt)
+      } catch {
+        window.prompt(t(undefined, 'lineage.promptCopied'), prompt)
+      }
+      setStatus(t(undefined, 'lineage.promptCopied'))
       const since = data.requestedAt ?? ''
       for (let attempt = 0; attempt < 40; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 3000))
@@ -474,8 +480,7 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
       }
       setStatus(t(undefined, 'lineage.llmTimeout'))
     } catch (err) {
-      const message = String((err as Error).message ?? err)
-      setError(message.includes('llm-unavailable') ? t(undefined, 'lineage.llmUnavailable') : message)
+      setError(String((err as Error).message ?? err))
       setStatus(null)
     } finally {
       setBusy(null)
@@ -506,10 +511,8 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
   }
 
   useEffect(() => {
-    api<{ subagentsAvailable: boolean; providerNames: string[] | null }>('/api/dsh-knowledge/lineage/llm-status')
-      .then((data) => setLlmInfo(data.subagentsAvailable
-        ? t(undefined, 'lineage.llmReady', { providers: (data.providerNames ?? []).join(', ') || 'default' })
-        : t(undefined, 'lineage.llmUnavailable')))
+    api<{ promptMode?: boolean; spawnAvailable?: boolean }>('/api/dsh-knowledge/lineage/llm-status')
+      .then(() => setLlmInfo(t(undefined, 'lineage.llmReady')))
       .catch(() => setLlmInfo(null))
   }, [])
 

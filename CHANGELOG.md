@@ -2,7 +2,15 @@
 
 本插件的版本发布记录。安装/升级方式见 [README](README.md#安装)。
 
-## v0.4.1（2026-09-21）— 修复：AI 分析报 cannot get property "subagents" without inject`n
+## v0.4.2（2026-09-21）— AI 分析改为「会话内执行」（一键复制指令）
+
+- **背景**：宿主 `subagents.startContinuable` 要求 `parent: Agent`（只能由 agent 轮次内发起），而面板按钮走 HTTP 路由、拿不到 Agent；强行注入「某个会话」还可能跑错会话。上一版的宿主 spawn 路径因此在点击时报 `Cannot read properties of undefined (reading 'id')`。
+- **新行为**：点「② AI 分析（会话内）」→ 宿主生成血缘分析指令并返回面板 → 面板**一键复制**并提示粘贴到当前会话 → agent 用 `wiki_lineage_propose` 提交提案（依旧不改卡）→ 面板保持轮询，提案自动并入预览，再勾选「应用选中」确定性写入。
+- `GET /lineage/llm-status` 改为报告 `promptMode: true` 与 `spawnAvailable`（仅信息用途，不再显示误导性的「AI 可用」）；`POST /lineage/run` 恒 200 返回 `{ mode: 'prompt', prompt, requestedAt }`。
+- 测试 46/46：run 端点断言改为「返回 prompt 且包含 wiki_lineage_propose 与目标 KB id」，llm-status 断言 promptMode。
+
+---
+## v0.4.1（2026-09-21）— 修复：AI 分析报 cannot get property "subagents" without inject
 - **原因**：cordis 禁止用 `ctx.<服务名>` 访问未在 `inject` 中声明的服务，此前的「防御性访问」写法触发了它的代理守卫，导致点击「② AI 分析」直接报错、整个请求 500。
 - **修复**：改用官方反射 API `ctx.reflect.get('subagents', false)`——服务未提供时返回 `undefined` 而不抛错；**刻意不把 `subagents` 加入 `inject`**，否则缺少该服务的 profile 会导致整个插件无法加载。
 - **行为**：`GET /lineage/llm-status` 现在总是 200（`subagentsAvailable: true/false`）；`POST /lineage/run` 在不可用时返回 503 + `llm-unavailable`，面板显示友好提示并回退确定性预扫。
