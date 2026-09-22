@@ -81,7 +81,7 @@ describe('knowledge routes over HTTP', () => {
     process.env.DSH_KNOWLEDGE_CARDS_ROOT = root
     const { ctx, routes } = makeStubCtx()
     apply(ctx as never)
-    expect(routes.length).toBe(31)
+    expect(routes.length).toBe(32)
     server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const route = routes.find((candidate) => candidate.kind === 'exact' && candidate.path === url.pathname)
@@ -619,6 +619,15 @@ describe('knowledge routes over HTTP', () => {
     const proposals = await jsonRequest(port, 'GET', `/api/dsh-knowledge/lineage/proposals?kb=${encodeURIComponent(lkbId)}`)
     expect(proposals.data.ok).toBe(true)
     expect(proposals.data.proposals).toBeNull()
+
+    // JEV branch: without TYPESAFE_API_KEY the endpoint answers 503 with a
+    // clear message (the plugin reads the env var only, never a file).
+    const previousKey = process.env.TYPESAFE_API_KEY
+    delete process.env.TYPESAFE_API_KEY
+    const jevAttempt = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/jev', { kb: lkbId })
+    expect(jevAttempt.status).toBe(503)
+    expect(String(jevAttempt.data.error)).toBe('jev-key-missing')
+    if (previousKey !== undefined) process.env.TYPESAFE_API_KEY = previousKey
 
     // AI branch probe: reads the optional subagents service through the
     // reflection API (an undeclared service must not throw) and reports that

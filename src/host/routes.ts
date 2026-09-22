@@ -15,6 +15,7 @@ import { searchCards } from '../core/search.ts'
 import { auditKb, buildDeepAuditPromptForKb } from './audit.ts'
 import { lintKb } from './lint.ts'
 import { applyLineage, buildLineagePrompt, listFieldCardMeta, readLineageProposals, scanLineage } from './lineage.ts'
+import { runJevLineage } from './jev.ts'
 import { compileRuleSet } from './rules.ts'
 import {
   addReview, commitPages, createCard, createKb, deleteCard, deleteCodeFile, deleteKb, editCard, getKb, importCards,
@@ -766,6 +767,31 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
       },
     },
     // ------------------------------------------------------------ lineage assist (panel button)
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/lineage/jev',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          const apiKey = (process.env.TYPESAFE_API_KEY ?? '').trim()
+          if (apiKey === '') {
+            return json(res, {
+              ok: false,
+              error: 'jev-key-missing',
+              detail: '未配置 TYPESAFE_API_KEY：到 https://console.typesafe.ai/keys 取 key，设置环境变量后重启 dsh web（插件只从环境变量读取，不落盘）',
+            }, 503)
+          }
+          ok(res, { result: await runJevLineage(kb, apiKey) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 502)
+        }
+      },
+    },
     {
       kind: 'exact' as const,
       path: '/api/dsh-knowledge/lineage/scan',

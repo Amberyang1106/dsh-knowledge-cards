@@ -378,8 +378,10 @@ export interface LineageProposal {
   slug: string
   title: string
   /** Where the proposal came from. */
-  source: 'scan' | 'llm' | 'manual'
+  source: 'scan' | 'llm' | 'jev' | 'manual'
   confidence: 'high' | 'medium' | 'low'
+  /** Numeric confidence when the producer reports one (JEV: 0–1). */
+  score?: number
   /** Human-readable evidence (quoted card text or metadata rule). */
   evidence: string
   /** Relation keys to add (union with what the card already has). */

@@ -389,6 +389,7 @@ interface LineageProposalFace {
   title: string
   source: string
   confidence: string
+  score?: number
   evidence: string
   relations: Record<string, string[]>
   metadata?: Record<string, unknown>
@@ -443,6 +444,29 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
       setStatus(t(undefined, 'lineage.scanDone', { n: data.result.proposals.length, cards: data.result.fieldCards }))
     } catch (err) {
       setError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const runJev = async (): Promise<void> => {
+    setBusy('jev')
+    setError(null)
+    setStatus(t(undefined, 'lineage.jevRunning'))
+    try {
+      const data = await api<{ result: { proposals: LineageProposalFace[]; model: string; questionCount: number; sentCards: number } }>('/api/dsh-knowledge/lineage/jev', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kbId }),
+      })
+      mergeProposals(data.result.proposals)
+      setStatus(t(undefined, 'lineage.jevDone', {
+        n: data.result.proposals.length, model: data.result.model, questions: data.result.questionCount, cards: data.result.sentCards,
+      }))
+    } catch (err) {
+      const message = String((err as Error).message ?? err)
+      setError(message.includes('jev-key-missing') ? t(undefined, 'lineage.jevKeyMissing') : message)
+      setStatus(null)
     } finally {
       setBusy(null)
     }
@@ -531,6 +555,7 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
       <p className={css.note}>{t(undefined, 'lineage.hint')}</p>
       <div className={css.controls}>
         <button className={css.run} disabled={busy !== null} onClick={() => void scan()}>{busy === 'scan' ? '…' : t(undefined, 'lineage.scan')}</button>
+        <button className={css.run} disabled={busy !== null} onClick={() => void runJev()}>{busy === 'jev' ? '…' : t(undefined, 'lineage.jev')}</button>
         <button className={css.runSmall} disabled={busy !== null} onClick={() => void runAgent()}>{busy === 'run' ? '…' : t(undefined, 'lineage.run')}</button>
         <button className={css.runSmall} disabled={busy !== null || rows.every((row) => !row.selected)} onClick={() => void apply()}>
           {busy === 'apply' ? '…' : t(undefined, 'lineage.apply', { n: rows.filter((row) => row.selected).length })}
@@ -566,7 +591,7 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
                   <div className={css.mono}>{row.source}</div>
                 </td>
                 <td className={css.mono}>{relationSummary(row)}</td>
-                <td>{row.confidence}</td>
+                <td>{row.confidence}{row.score !== undefined ? ` (${row.score.toFixed(2)})` : ''}</td>
                 <td>{row.evidence}{row.note !== undefined ? `（${row.note}）` : ''}</td>
               </tr>
             ))}

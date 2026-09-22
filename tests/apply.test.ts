@@ -41,8 +41,8 @@ describe('host apply (boot path)', () => {
     const { ctx, routes, tools, sections } = makeCtx()
     expect(() => apply(ctx as never)).not.toThrow()
 
-    // 31 exact routes under /api/dsh-knowledge (one handler per path, method-dispatched).
-    expect(routes).toHaveLength(31)
+    // 32 exact routes under /api/dsh-knowledge (one handler per path, method-dispatched).
+    expect(routes).toHaveLength(32)
     const paths = routes.map((route) => (route as { path?: string }).path)
     expect(paths).toEqual([
       '/api/dsh-knowledge/kbs',
@@ -71,6 +71,7 @@ describe('host apply (boot path)', () => {
       '/api/dsh-knowledge/kbs/purge',
       '/api/dsh-knowledge/trash',
       '/api/dsh-knowledge/rules',
+      '/api/dsh-knowledge/lineage/jev',
       '/api/dsh-knowledge/lineage/scan',
       '/api/dsh-knowledge/lineage/llm-status',
       '/api/dsh-knowledge/lineage/run',
