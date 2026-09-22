@@ -26,6 +26,10 @@ function makeStubCtx() {
       webServer: { register: (route: RouteSpec) => { routes.push(route); return () => {} } },
       tools: { register: () => () => {} },
       systemPrompt: { section: () => () => {} },
+      // Optional-service access goes through the reflection API (an undeclared
+      // service must read as undefined, never throw). No subagents here, so the
+      // lineage AI branch must degrade gracefully.
+      reflect: { get: () => undefined },
     },
   }
 }
@@ -615,6 +619,19 @@ describe('knowledge routes over HTTP', () => {
     const proposals = await jsonRequest(port, 'GET', `/api/dsh-knowledge/lineage/proposals?kb=${encodeURIComponent(lkbId)}`)
     expect(proposals.data.ok).toBe(true)
     expect(proposals.data.proposals).toBeNull()
+
+    // AI branch availability probe: an undeclared subagents service reads as
+    // unavailable instead of throwing (this is what broke with a plain ctx.x
+    // access — cordis rejects it with "cannot get property … without inject").
+    const llmStatus = await jsonRequest(port, 'GET', '/api/dsh-knowledge/lineage/llm-status')
+    expect(llmStatus.status).toBe(200)
+    expect(llmStatus.data.ok).toBe(true)
+    expect(llmStatus.data.subagentsAvailable).toBe(false)
+
+    // …and starting a run degrades to a clear 503 message rather than crashing
+    const runAttempt = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/run', { kb: lkbId })
+    expect(runAttempt.status).toBe(503)
+    expect(String(runAttempt.data.error)).toBe('llm-unavailable')
   })
 
   it('deletes a knowledge base to the trash and restores it with its review queue', async () => {

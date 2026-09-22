@@ -1,7 +1,7 @@
 {
   "name": "@amberyang1106/dsh-knowledge-cards",
   "description": "Knowledge-card sidebar plugin for the dsh web GUI, built on the Karpathy / llm_wiki three-layer architecture (raw sources → LLM-maintained wiki cards → schema). Multiple configurable knowledge bases, a card-wall browser with search, detail view, manual card creation and a rule-card (type=rules) authoring surface, deterministic index/log/overview maintenance, SHA256 incremental ingest cache, soft-delete recycle bin for cards and knowledge bases, nested-YAML frontmatter, a versioned rule-set compile endpoint (/api/dsh-knowledge/rules) for external check pipelines, lint, and 21 agent tools (wiki_kbs / wiki_search / wiki_read / wiki_ingest / wiki_commit / wiki_lint / wiki_card_delete / wiki_trash_list / ...) so any project session can pull domain knowledge in as context. Self-contained distribution via GitHub (standalone repo, not the dsh-web-ui monorepo).",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

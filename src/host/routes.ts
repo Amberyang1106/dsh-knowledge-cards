@@ -790,7 +790,10 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
         if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
         if (req.method !== 'GET') return json(res, { error: `method not allowed: ${req.method}` }, 405)
         try {
-          const subagents = (ctx as unknown as { subagents?: Record<string, unknown> }).subagents
+          // Optional service: cordis forbids plain ctx.<name> access for
+          // undeclared services, so read it through the reflection API which
+          // returns undefined instead of throwing (and never hard-requires it).
+          const subagents = ctx.reflect.get('subagents', false) as Record<string, unknown> | undefined
           const methods = subagents === undefined ? [] : Object.keys(subagents).filter((key) => typeof (subagents as Record<string, unknown>)[key] === 'function')
           let providerNames: string[] | null = null
           const listProviders = subagents?.listProviders
@@ -827,7 +830,7 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
           if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
           const cards = await listFieldCardMeta(kb)
           if (cards.length === 0) return json(res, { ok: false, error: '该知识库没有字段卡（type=field），无需血缘补齐' }, 400)
-          const subagents = (ctx as unknown as { subagents?: Record<string, unknown> }).subagents
+          const subagents = ctx.reflect.get('subagents', false) as Record<string, unknown> | undefined
           const start = subagents?.startContinuable
           if (typeof start !== 'function') {
             return json(res, {

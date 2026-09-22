@@ -70,10 +70,10 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 > ⚠️ **仓库为私有**：安装前需先被授予该仓库的读权限（维护者将你加为 GitHub 协作者，或你已在组织的允许列表内）。首次安装时 git 会弹出 GitHub 登录，用你自己的账号登录即可；未授权时会报 `Authentication failed` / `could not read Username`。
 
 ```sh
-dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.0
+dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.1
 ```
 
-> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.4.0` 换成新 tag。
+> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.4.1` 换成新 tag。
 
 重启 `dsh web`，侧边栏出现「知识卡片」。你的知识库数据在 `~/.dsh/knowledge-cards/`，安装/升级/卸载插件均不影响。
 
@@ -103,7 +103,7 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 | 模式 | 命令 | 用途 |
 |---|---|---|
 | 开发模式（link:） | `dsh plugin --profile web add C:/Users/yangtt16/dsh-knowledge-cards` | 日常开发：改代码 → build → 重启即生效 |
-| 发布验证模式（github spec） | `dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.0` | 验证用户视角的安装；与 README 安装命令一致 |
+| 发布验证模式（github spec） | `dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.1` | 验证用户视角的安装；与 README 安装命令一致 |
 | 卸载 | `dsh plugin --profile web remove @amberyang1106/dsh-knowledge-cards` | 移除依赖与 bundles 条目 |
 
 原理：`dsh plugin` 把参数转发给 profile 目录里的 pnpm，成功后自动 reconcile `dsh.profile.bundles`——同名包增删 spec 不会双重挂载。
@@ -122,9 +122,9 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 2. 更新 README（功能变化、Roadmap 里已完成项勾掉）
 3. **同步本地 dsh-wiki 工作区 README**（`C:\Users\yangtt16\OneDrive - Lenovo\AI Test\Finance KM\dsh-wiki\README.md`）：功能特性 / 路由数 / 工具数 / 面板 tab / 测试数 / Changelog / 后续计划，与本仓库 README、CHANGELOG.md 保持口径一致
 4. `pnpm build` 确保 `lib/` 同步 → `git add -A && git commit`
-5. `git tag v0.4.0 && git push && git push --tags`
-6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.0` → 重启验证 → 再切回 link: 开发
-7. 更新 GitHub Release（`gh release create v0.4.0 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.4.0` 重装
+5. `git tag v0.4.1 && git push && git push --tags`
+6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.1` → 重启验证 → 再切回 link: 开发
+7. 更新 GitHub Release（`gh release create v0.4.1 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.4.1` 重装
 
 ### 关键注意点
 

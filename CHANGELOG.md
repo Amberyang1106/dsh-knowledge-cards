@@ -2,6 +2,14 @@
 
 本插件的版本发布记录。安装/升级方式见 [README](README.md#安装)。
 
+## v0.4.1（2026-09-21）— 修复：AI 分析报 cannot get property "subagents" without inject`n
+- **原因**：cordis 禁止用 `ctx.<服务名>` 访问未在 `inject` 中声明的服务，此前的「防御性访问」写法触发了它的代理守卫，导致点击「② AI 分析」直接报错、整个请求 500。
+- **修复**：改用官方反射 API `ctx.reflect.get('subagents', false)`——服务未提供时返回 `undefined` 而不抛错；**刻意不把 `subagents` 加入 `inject`**，否则缺少该服务的 profile 会导致整个插件无法加载。
+- **行为**：`GET /lineage/llm-status` 现在总是 200（`subagentsAvailable: true/false`）；`POST /lineage/run` 在不可用时返回 503 + `llm-unavailable`，面板显示友好提示并回退确定性预扫。
+- **测试**：46/46（新增断言：无 subagents 时探测不崩 + run 返回 503）。
+
+---
+
 ## v0.4.0（2026-09-21）— field 字段卡 + 一键血缘补齐
 
 ### 与 v0.3.0 的主要差异
