@@ -9,8 +9,15 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { buildJevQuestions, buildJevState, credentialLookup, jevProposals, resolveJevConfig, runJevLineage } from '../src/host/jev.ts'
-import { createCard, createKb, getKb } from '../src/host/store.ts'
+import type { KbConfig } from '../src/core/types.ts'
+import { LINEAGE_CONFIG_DEFAULTS } from '../src/host/lineage-config.ts'
+import {
+  buildJevCardScopes, buildJevQuestions, buildJevState, credentialLookup, jevProposals, planJevScope, resolveJevConfig,
+  runJevLineage,
+} from '../src/host/jev.ts'
+import type { JevCardScope } from '../src/host/jev.ts'
+import { confirmFieldCards } from '../src/host/lineage.ts'
+import { createCard, createKb, editCard, getKb } from '../src/host/store.ts'
 
 let root: string
 let kbId: string
@@ -272,5 +279,161 @@ describe('JEV round trip (stubbed fetch)', () => {
         apiKey: 'test-key',
       }),
     ).rejects.toThrow(/jev HTTP 429/)
+  })
+})
+
+describe('JEV scope: skipping confirmed cards', () => {
+  const kbStub = { id: 'stub' } as unknown as KbConfig
+  const scopeOf = (slug: string, reviewStatus: string): JevCardScope => ({ reviewStatus, state: { slug, title: slug } })
+
+  it('skips only pairs whose BOTH ends are confirmed (pair level, never card level)', () => {
+    const scopes = [scopeOf('a', 'confirmed'), scopeOf('b', 'confirmed'), scopeOf('c', 'draft')]
+    const plan = planJevScope(scopes, LINEAGE_CONFIG_DEFAULTS)
+    expect(plan.skipped.sort()).toEqual(['a', 'b'])
+    expect(plan.judged).toEqual(['c'])
+    // 3*2 total pairs, minus the (a,b)/(b,a) pair whose both ends are done,
+    // plus 2 metadata questions for the single judged card.
+    expect(plan.skippedPairCount).toBe(2)
+    expect(plan.questionCount).toBe(6 - 2 + 2)
+
+    // a NEW card still gets asked against every confirmed card, both directions
+    const questions = buildJevQuestions(plan.sent, { isJudged: (slug) => plan.judged.includes(slug) })
+    expect(Object.keys(questions)).toContain('dep::c::a')
+    expect(Object.keys(questions)).toContain('dep::a::c')
+    expect(Object.keys(questions)).not.toContain('dep::a::b')
+    // and the confirmed cards get no metadata questions of their own
+    expect(Object.keys(questions)).not.toContain('kind::a')
+    expect(Object.keys(questions)).not.toContain('agg::b')
+    expect(Object.keys(questions)).toContain('kind::c')
+  })
+
+  it('counts nothing as skipped when the switch is off, and honours force flags', () => {
+    const scopes = [scopeOf('a', 'confirmed'), scopeOf('b', 'confirmed')]
+    expect(planJevScope(scopes, { ...LINEAGE_CONFIG_DEFAULTS, skipConfirmed: false }).skipped).toEqual([])
+    expect(planJevScope(scopes, LINEAGE_CONFIG_DEFAULTS).judgedCardCount).toBe(0)
+
+    const forced = planJevScope(scopes, LINEAGE_CONFIG_DEFAULTS, { slugs: ['a'] })
+    expect(forced.skipped).toEqual(['b'])
+    expect(forced.judged).toEqual(['a'])
+    expect(forced.skippedPairCount).toBe(0)
+
+    const all = planJevScope(scopes, LINEAGE_CONFIG_DEFAULTS, { all: true })
+    expect(all.skipped).toEqual([])
+    expect(all.judgedCardCount).toBe(2)
+  })
+
+  it('end to end: confirmed cards leave the question set but stay reachable as targets', async () => {
+    const kb = await createKb({ name: 'JEV 跳过测试库' })
+    for (const title of ['Alpha Field', 'Beta Field', 'Gamma Field']) {
+      const current = await getKb(kb.id)
+      await createCard(current!, {
+        type: 'field',
+        title,
+        description: `${title} 定义`,
+        body: `${title} amount.`,
+        frontmatter: { field_kind: 'measure', data_type: 'amount' },
+      })
+    }
+    const confirmed = await confirmFieldCards(kb, ['Gamma-Field'])
+    expect(confirmed.confirmed).toEqual(['Gamma-Field'])
+
+    const calls: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', async (_url: string, init: { body?: string }) => {
+      calls.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+      return { ok: true, status: 200, text: async () => JSON.stringify({ model: 'm', answers: {}, usage: { input_tokens: 5 } }) } as unknown as Response
+    })
+
+    const result = await runJevLineage(await getKb(kb.id)!, {
+      line: 'openrouter',
+      endpoint: 'https://openrouter.ai/api/v1/systemone',
+      model: 'jev-1.13',
+      apiKey: 'k',
+    })
+    expect(result.sentCards).toBe(3)
+    expect(result.judgedCards).toBe(2)
+    expect(result.skippedCards).toEqual(['Gamma-Field'])
+    const keys = Object.keys((calls[0].questions ?? {}) as Record<string, unknown>)
+    expect(keys).not.toContain('kind::Gamma-Field')
+    expect(keys).toContain('dep::Alpha-Field::Gamma-Field')
+    expect(result.paramsFingerprint).toHaveLength(12)
+
+    // forcing it back in widens the round again
+    calls.length = 0
+    const forced = await runJevLineage(
+      await getKb(kb.id)!,
+      { line: 'openrouter', endpoint: 'https://openrouter.ai/api/v1/systemone', model: 'jev-1.13', apiKey: 'k' },
+      { forceSlugs: ['Gamma-Field'] },
+    )
+    expect(forced.skippedCards).toEqual([])
+    expect(Object.keys((calls[0].questions ?? {}) as Record<string, unknown>)).toContain('kind::Gamma-Field')
+  })
+
+  it('refuses a round with nothing to judge, and applies the card cap to judged cards', async () => {
+    // Any accidental fetch would mean a real (billable, networked) call: make
+    // that fail loudly instead. Both cases below must trip a guard first.
+    vi.stubGlobal('fetch', async () => {
+      throw new Error('unexpected fetch: the guard should have blocked this round')
+    })
+    const transport = { line: 'openrouter' as const, endpoint: 'https://openrouter.ai/api/v1/systemone', model: 'jev-1.13', apiKey: 'k' }
+
+    const allKb = await createKb({ name: 'JEV 全确认库' })
+    for (const title of ['One Field', 'Two Field']) {
+      const current = await getKb(allKb.id)
+      await createCard(current!, {
+        type: 'field',
+        title,
+        description: `${title} 定义`,
+        body: `${title} amount.`,
+        frontmatter: { field_kind: 'measure', data_type: 'amount' },
+      })
+    }
+    await confirmFieldCards(allKb, ['One-Field', 'Two-Field'])
+    await expect(runJevLineage(await getKb(allKb.id)!, transport)).rejects.toThrow(/无卡可判/)
+
+    // The cap counts cards UNDER JUDGEMENT: 1 of 3 confirmed leaves 2, which
+    // exceeds maxCards=1 even though the KB holds only 3 cards.
+    const capKb = await createKb({ name: 'JEV 上限库' })
+    for (const title of ['Alpha One', 'Beta Two', 'Gamma Three']) {
+      const current = await getKb(capKb.id)
+      await createCard(current!, {
+        type: 'field',
+        title,
+        description: `${title} 定义`,
+        body: `${title} amount.`,
+        frontmatter: { field_kind: 'measure', data_type: 'amount' },
+      })
+    }
+    await confirmFieldCards(capKb, ['Gamma-Three'])
+    await expect(
+      runJevLineage(await getKb(capKb.id)!, transport, { params: { ...LINEAGE_CONFIG_DEFAULTS, maxCards: 1 } }),
+    ).rejects.toThrow(/参与判定的字段卡 2 张/)
+
+    // Raising the cap lets the same round run (fetch stub still blocks it, which
+    // proves the guard is what stopped it before).
+    await expect(
+      runJevLineage(await getKb(capKb.id)!, transport, { params: { ...LINEAGE_CONFIG_DEFAULTS, maxCards: 5 } }),
+    ).rejects.toThrow(/unexpected fetch/)
+  })
+
+  it('honours the parameter thresholds and stamps the fingerprint on proposals', () => {
+    const states = [{ slug: 'x', title: 'X', field_kind: 'dimension', aggregation: 'additive', data_type: 'string' }]
+    const answers = {
+      'dep::x::x2': { type: 'noul', noul: 0.7 },
+      'kind::x': { type: 'choice', choice: 'dimension', confidence: 0.7 },
+    }
+    const strict = jevProposals(kbStub, [...states, { slug: 'x2', title: 'X2' }], answers, {
+      confidenceHigh: 0.8, confidenceMedium: 0.5, depThreshold: 0.9, additiveThreshold: 0.2, paramsFingerprint: 'fp0000000000',
+    })
+    // 0.7 is below the raised depThreshold → no edge at all
+    expect(strict.some((proposal) => proposal.relations.depends_on !== undefined)).toBe(false)
+
+    const loose = jevProposals(kbStub, [...states, { slug: 'x2', title: 'X2' }], answers, {
+      confidenceHigh: 0.6, confidenceMedium: 0.4, depThreshold: 0.5, additiveThreshold: 0.2, paramsFingerprint: 'fp1111111111',
+    })
+    const edge = loose.find((proposal) => proposal.relations.depends_on !== undefined)
+    expect(edge).toBeDefined()
+    // 0.7 ≥ confidenceHigh(0.6) → high, and the note carries the fingerprint
+    expect(edge?.confidence).toBe('high')
+    expect(edge?.note).toContain('fp1111111111')
   })
 })

@@ -38,12 +38,53 @@ function jsonResponse(data: unknown): Response {
   return { ok: true, json: async () => data } as unknown as Response
 }
 
+/** Field cards as the scope picker sees them. */
+const SCOPE_CARDS = [
+  { slug: 'cost-allocation', title: '成本分摊', reviewStatus: 'confirmed', confirmed: true, dependsOn: 1, usedBy: 0 },
+  { slug: 'profit-center', title: '利润中心', reviewStatus: 'draft', confirmed: false, dependsOn: 0, usedBy: 1 },
+]
+
+/** Live parameter state for the mocked /lineage/config endpoint. */
+let lineageConfig: Record<string, number | boolean> = {
+  confidenceHigh: 0.8, confidenceMedium: 0.5, depThreshold: 0.5, additiveThreshold: 0.2,
+  askFieldKind: true, askAdditive: true, excerptChars: 400, maxCards: 20, maxQuestions: 1200,
+  questionsPerRequest: 60, payloadBudgetChars: 96000, skipConfirmed: true,
+}
+let savedParamBody: Record<string, number | boolean> | null = null
+
+function paramStateEnvelope(): Record<string, unknown> {
+  const defaults: Record<string, number | boolean> = { ...lineageConfig, depThreshold: 0.5 }
+  const numeric: Record<string, { min: number; max: number; integer: boolean }> = {
+    confidenceHigh: { min: 0.01, max: 1, integer: false },
+    confidenceMedium: { min: 0.01, max: 1, integer: false },
+    depThreshold: { min: 0, max: 1, integer: false },
+    additiveThreshold: { min: 0, max: 1, integer: false },
+    excerptChars: { min: 50, max: 2000, integer: true },
+    maxCards: { min: 1, max: 500, integer: true },
+    maxQuestions: { min: 20, max: 20000, integer: true },
+    questionsPerRequest: { min: 10, max: 200, integer: true },
+    payloadBudgetChars: { min: 10000, max: 200000, integer: true },
+  }
+  return {
+    kb: KB.id,
+    path: '/tmp/finance/lineage/finance-km.config.json',
+    config: { ...lineageConfig },
+    defaults,
+    overridden: lineageConfig.depThreshold === 0.5 ? [] : ['depThreshold'],
+    issues: [],
+    fingerprint: 'abcdef123456',
+    fields: Object.entries(lineageConfig).map(([key, value]) => typeof value === 'boolean'
+      ? { key, kind: 'boolean', default: value }
+      : { key, kind: 'number', min: numeric[key]?.min ?? 0, max: numeric[key]?.max ?? 1, integer: numeric[key]?.integer ?? false, default: defaults[key] }),
+  }
+}
+
 function installFetchMock(): void {
   // Stateful review queue so resolve/skip actually empties the pending view.
   let reviewItems = [
     { id: 'r1', kind: 'contradiction', title: '分摊动因取值口径', summary: '新资料称用本期实际值，与现有卡片矛盾', source: 'new-policy.md', options: ['创建页面', '深度研究', '跳过'], searchQuery: '分摊 动因 口径', status: 'pending' as const, createdAt: 1 },
   ]
-  vi.stubGlobal('fetch', vi.fn((input: string) => {
+  vi.stubGlobal('fetch', vi.fn((input: string, init?: { method?: string; body?: string }) => {
     const url = new URL(input, 'http://localhost')
     if (url.pathname === '/api/dsh-knowledge/kbs') return Promise.resolve(jsonResponse({ ok: true, kbs: [KB] }))
     if (url.pathname === '/api/dsh-knowledge/cards') {
@@ -90,6 +131,20 @@ function installFetchMock(): void {
     if (url.pathname === '/api/dsh-knowledge/commit') {
       return Promise.resolve(jsonResponse({ ok: true, result: { created: ['concepts/分摊动因.md'], updated: [], indexUpdated: true, logEntry: 'ingest | 分摊动因', overviewUpdated: true, cachedSources: [] } }))
     }
+    if (url.pathname === '/api/dsh-knowledge/lineage/llm-status') {
+      return Promise.resolve(jsonResponse({ ok: true, promptMode: true, spawnAvailable: false }))
+    }
+    if (url.pathname === '/api/dsh-knowledge/lineage/cards') {
+      return Promise.resolve(jsonResponse({ ok: true, cards: SCOPE_CARDS }))
+    }
+    if (url.pathname === '/api/dsh-knowledge/lineage/config') {
+      if (init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { config: Record<string, number | boolean> }
+        savedParamBody = body.config
+        lineageConfig = { ...lineageConfig, ...body.config }
+      }
+      return Promise.resolve(jsonResponse({ ok: true, state: paramStateEnvelope() }))
+    }
     return Promise.resolve(jsonResponse({ ok: false, error: 'not found' }))
   }))
 }
@@ -98,6 +153,8 @@ let container: HTMLDivElement
 
 beforeEach(() => {
   installFetchMock()
+  savedParamBody = null
+  lineageConfig = { ...lineageConfig, depThreshold: 0.5 }
   // jsdom has no clipboard; stub it so copy actions resolve.
   Object.defineProperty(navigator, 'clipboard', {
     value: { writeText: vi.fn(async () => {}) },
@@ -233,6 +290,45 @@ describe('KnowledgePanel', () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
     expect(text()).toContain('已保存：修改字段 摘要、正文')
+  })
+
+  it('shows the lineage scope and parameters, and saves a parameter change', async () => {
+    await renderPanel()
+    // open the lineage panel from the cards tab
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((entry) => entry.textContent?.includes('🧬'))
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    // both new sections render their content (collapsed <details> still in the DOM)
+    expect(text()).toContain('判定范围')
+    expect(text()).toContain('参数')
+    expect(text()).toContain('skipConfirmed')
+    expect(text()).toContain('depThreshold')
+    // scope summary counts confirmed vs judged, and marks the confirmed card
+    expect(text()).toContain('字段卡共 2 张，已确认 1 张')
+    expect(text()).toContain('已确认')
+
+    // change depThreshold and save: the value must travel as a NUMBER
+    const thresholdInput = Array.from(container.querySelectorAll('input[type=number]'))
+      .find((input) => input.closest('label')?.textContent?.includes('depThreshold'))
+    expect(thresholdInput).toBeDefined()
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+      setter?.call(thresholdInput, '0.7')
+      thresholdInput!.dispatchEvent(new window.Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      Array.from(container.querySelectorAll('button')).find((entry) => entry.textContent?.trim() === '保存参数')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(savedParamBody).not.toBeNull()
+    expect(savedParamBody?.depThreshold).toBe(0.7)
+    expect(typeof savedParamBody?.depThreshold).toBe('number')
+    // untouched parameters are still sent so the server sees a full picture
+    expect(Object.keys(savedParamBody ?? {}).length).toBeGreaterThan(5)
+    expect(text()).toContain('参数已保存')
   })
 
   it('shows the modification log board with action filters', async () => {

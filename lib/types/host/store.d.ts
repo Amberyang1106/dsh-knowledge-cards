@@ -111,6 +111,11 @@ export interface CardEditInput {
      * sources/created/updated) keep coming from their own input fields.
      */
     frontmatter?: Record<string, unknown>;
+    /**
+     * Extra one-line notes prepended to the `edit` log entry — used by the
+     * lineage apply to record which parameter set produced the change.
+     */
+    extraNotes?: string[];
 }
 /**
  * Manually edit one card in place (same slug/path — inbound [[wikilinks]]

@@ -14,8 +14,9 @@ import type { CardMeta, PageInput } from '../core/types.ts'
 import { searchCards } from '../core/search.ts'
 import { auditKb, buildDeepAuditPromptForKb } from './audit.ts'
 import { lintKb } from './lint.ts'
-import { applyLineage, buildLineagePrompt, listFieldCardMeta, readLineageProposals, scanLineage } from './lineage.ts'
+import { applyLineage, buildLineagePrompt, confirmFieldCards, listFieldCardMeta, listFieldCardScopes, readLineageProposals, scanLineage } from './lineage.ts'
 import { credentialLookup, resolveJevConfig, runJevLineage } from './jev.ts'
+import { lineageConfigState, loadLineageConfig, normalizeLineageConfig, saveLineageConfig } from './lineage-config.ts'
 import { compileRuleSet } from './rules.ts'
 import {
   addReview, commitPages, createCard, createKb, deleteCard, deleteCodeFile, deleteKb, editCard, getKb, importCards,
@@ -766,7 +767,78 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
         }
       },
     },
-    // ------------------------------------------------------------ lineage assist (panel button)
+    // ------------------------------------------------------------ lineage scope picker
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/lineage/cards',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'GET') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const url = new URL(req.url ?? '/', 'http://localhost')
+          const kbId = queryParam(url, 'kb')
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          ok(res, { cards: await listFieldCardScopes(kb) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
+        }
+      },
+    },
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/lineage/confirm',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        if (req.method !== 'POST') return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        try {
+          const body = (await readJsonBody(req)) as Record<string, unknown> | null
+          const kbId = asString(body?.kb)
+          const kb = await getKb(kbId)
+          if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+          const slugs = asStringArray(body?.slugs).map((slug) => slug.trim()).filter((slug) => slug !== '')
+          if (slugs.length === 0) return json(res, { ok: false, error: 'slugs 不能为空' }, 400)
+          ok(res, { result: await confirmFieldCards(kb, slugs) })
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
+        }
+      },
+    },
+    // ------------------------------------------------------------ lineage parameters
+    {
+      kind: 'exact' as const,
+      path: '/api/dsh-knowledge/lineage/config',
+      handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        if (!isLoopbackRequest(req)) return json(res, { error: 'forbidden: loopback-only' }, 403)
+        try {
+          if (req.method === 'GET') {
+            const url = new URL(req.url ?? '/', 'http://localhost')
+            const kbId = queryParam(url, 'kb')
+            const kb = await getKb(kbId)
+            if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+            // A broken file is reported, never hidden: the panel shows the
+            // issues while the round runs on defaults.
+            return ok(res, { state: lineageConfigState(kb, await loadLineageConfig(kb)) })
+          }
+          if (req.method === 'POST') {
+            const body = (await readJsonBody(req)) as Record<string, unknown> | null
+            const kbId = asString(body?.kb)
+            const kb = await getKb(kbId)
+            if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
+            const { config, issues } = normalizeLineageConfig(body?.config)
+            if (issues.length > 0) {
+              // Reject rather than persist a bad value: a stored typo would
+              // only surface much later, as a confusing run failure.
+              return json(res, { ok: false, error: 'invalid-config', issues }, 400)
+            }
+            return ok(res, { state: lineageConfigState(kb, await saveLineageConfig(kb, config)) })
+          }
+          return json(res, { error: `method not allowed: ${req.method}` }, 405)
+        } catch (error) {
+          json(res, { ok: false, error: String((error as Error).message ?? error) }, 500)
+        }
+      },
+    },
     {
       kind: 'exact' as const,
       path: '/api/dsh-knowledge/lineage/jev',
@@ -792,7 +864,10 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
                 '未配置 JEV key：写入 DSH 凭据库 ~/.dsh/.credentials.yaml（推荐，优先级最高、改完立即生效、无需重启）或设环境变量 OPENROUTER_API_KEY（默认线路，https://openrouter.ai/keys，$0.042/M 输入）；直连兜底用 TYPESAFE_API_KEY（https://console.typesafe.ai/keys）。插件只读取凭据、不写入。',
             }, 503)
           }
-          ok(res, { result: await runJevLineage(kb, config) })
+          // Optional per-run scope overrides from the panel.
+          const forceSlugs = asStringArray(body?.forceSlugs).map((slug) => slug.trim()).filter((slug) => slug !== '')
+          const forceAll = body?.forceAll === true
+          ok(res, { result: await runJevLineage(kb, config, { forceSlugs, forceAll }) })
         } catch (error) {
           json(res, { ok: false, error: String((error as Error).message ?? error) }, 502)
         }

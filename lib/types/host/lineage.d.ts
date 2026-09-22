@@ -13,7 +13,7 @@
  *                           marked inferred, confirmed cards never downgraded).
  * @module dsh-knowledge-cards/host/lineage
  */
-import type { KbConfig, LineageApplyResult, LineageProposal, LineageProposalFile, LineageScanResult } from '../core/types.ts';
+import type { FieldCardScopeEntry, KbConfig, LineageApplyResult, LineageProposal, LineageProposalFile, LineageScanResult } from '../core/types.ts';
 /**
  * Deterministic lineage scan: candidate edges + metadata gaps for every field
  * card of one KB. Read-only.
@@ -40,6 +40,27 @@ interface FieldCardMeta {
 }
 /** Slugs+titles of the field cards (for prompts). */
 export declare function listFieldCardMeta(kb: KbConfig): Promise<FieldCardMeta[]>;
+/**
+ * One row per field card for the scope picker: review status (drives the
+ * confirmed-card skip), whether it is confirmed, and how much lineage it
+ * already carries. Read-only.
+ */
+export declare function listFieldCardScopes(kb: KbConfig): Promise<FieldCardScopeEntry[]>;
+/**
+ * Mark field cards as owner-confirmed (review_status=confirmed), which is what
+ * takes them out of the default JEV scope. Only review_status is touched —
+ * evidence_level keeps describing where the evidence came from. Non-field cards
+ * and unknown slugs are reported, never silently dropped.
+ */
+export declare function confirmFieldCards(kb: KbConfig, slugs: string[]): Promise<{
+    kb: string;
+    confirmed: string[];
+    skipped: Array<{
+        slug: string;
+        reason: string;
+    }>;
+    generatedAt: string;
+}>;
 /**
  * Deterministic apply: write the accepted proposals (union semantics for
  * relations, metadata set/remove), marking provenance inferred unless the

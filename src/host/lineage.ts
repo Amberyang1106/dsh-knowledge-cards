@@ -18,7 +18,7 @@ import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { parseFrontmatter } from '../core/frontmatter.ts'
 import type {
-  CardMeta, KbConfig, LineageApplyResult, LineageProposal, LineageProposalFile, LineageScanResult,
+  CardMeta, FieldCardScopeEntry, KbConfig, LineageApplyResult, LineageProposal, LineageProposalFile, LineageScanResult,
 } from '../core/types.ts'
 import { configRoot, editCard, listCards, readCard } from './store.ts'
 
@@ -279,6 +279,68 @@ export async function listFieldCardMeta(kb: KbConfig): Promise<FieldCardMeta[]> 
 }
 
 /**
+ * One row per field card for the scope picker: review status (drives the
+ * confirmed-card skip), whether it is confirmed, and how much lineage it
+ * already carries. Read-only.
+ */
+export async function listFieldCardScopes(kb: KbConfig): Promise<FieldCardScopeEntry[]> {
+  const views = await loadFieldCards(kb)
+  return views.map((view) => {
+    const reviewStatus = typeof view.fm.review_status === 'string' ? view.fm.review_status.trim() : ''
+    return {
+      slug: view.meta.slug,
+      title: view.meta.title,
+      reviewStatus,
+      confirmed: reviewStatus === 'confirmed',
+      dependsOn: asStringList(view.fm.depends_on).length,
+      usedBy: asStringList(view.fm.used_by).length,
+    }
+  })
+}
+
+/**
+ * Mark field cards as owner-confirmed (review_status=confirmed), which is what
+ * takes them out of the default JEV scope. Only review_status is touched —
+ * evidence_level keeps describing where the evidence came from. Non-field cards
+ * and unknown slugs are reported, never silently dropped.
+ */
+export async function confirmFieldCards(
+  kb: KbConfig,
+  slugs: string[],
+): Promise<{ kb: string; confirmed: string[]; skipped: Array<{ slug: string; reason: string }>; generatedAt: string }> {
+  const confirmed: string[] = []
+  const skipped: Array<{ slug: string; reason: string }> = []
+  for (const slug of [...new Set(slugs)]) {
+    const card = await readCard(kb, slug)
+    if (card === null) {
+      skipped.push({ slug, reason: '卡片不存在' })
+      continue
+    }
+    if (card.type !== 'field') {
+      skipped.push({ slug, reason: `仅支持 field 卡（当前 type=${card.type}）` })
+      continue
+    }
+    const current = parseFrontmatter(card.raw).frontmatter ?? {}
+    const next: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(current)) {
+      if (['type', 'title', 'description', 'tags', 'related', 'sources', 'created', 'updated'].includes(key)) continue
+      next[key] = value
+    }
+    if (current.review_status === 'confirmed') {
+      skipped.push({ slug, reason: '已经是 confirmed' })
+      continue
+    }
+    next.review_status = 'confirmed'
+    await editCard(kb, slug, {
+      frontmatter: next,
+      extraNotes: ['血缘范围: 标记为已确认（后续 JEV 默认跳过本卡）'],
+    })
+    confirmed.push(slug)
+  }
+  return { kb: kb.id, confirmed, skipped, generatedAt: new Date().toISOString() }
+}
+
+/**
  * Deterministic apply: write the accepted proposals (union semantics for
  * relations, metadata set/remove), marking provenance inferred unless the
  * card is already confirmed. Never touches cards that are not field cards.
@@ -292,7 +354,6 @@ export async function applyLineage(kb: KbConfig, accepted: LineageProposal[]): P
     list.push(proposal)
     bySlug.set(proposal.slug, list)
   }
-
   for (const [slug, proposals] of bySlug) {
     const card = await readCard(kb, slug)
     if (card === null) {
@@ -331,7 +392,13 @@ export async function applyLineage(kb: KbConfig, accepted: LineageProposal[]): P
       next.evidence_level = typeof next.evidence_level === 'string' && next.evidence_level !== '' ? next.evidence_level : 'inferred'
     }
 
-    const result = await editCard(kb, slug, { frontmatter: next })
+    // Traceability: a JEV proposal carries the parameter fingerprint of the
+    // round that produced it, so the log says which settings wrote this edge.
+    const provenance = [...new Set(proposals.map((proposal) => proposal.note).filter((note): note is string => typeof note === 'string' && note !== ''))]
+    const result = await editCard(kb, slug, {
+      frontmatter: next,
+      extraNotes: provenance.length > 0 ? [`血缘来源: ${provenance.join(' / ')}`] : undefined,
+    })
     const fm = parseFrontmatter(result.card.raw).frontmatter ?? {}
     const relations: Record<string, string[]> = {}
     for (const key of RELATION_KEYS) relations[key] = asStringList(fm[key])

@@ -405,6 +405,199 @@ function lineageRowKey(proposal: LineageProposalFace): string {
   return `${proposal.slug}|${proposal.source}|${proposal.evidence.slice(0, 60)}|${JSON.stringify(proposal.relations)}`
 }
 
+/** One tunable parameter as the server describes it (bounds come from there). */
+interface LineageParamFieldFace {
+  key: string
+  kind: 'number' | 'boolean'
+  min?: number
+  max?: number
+  integer?: boolean
+  default: number | boolean
+}
+
+interface LineageParamStateFace {
+  path: string
+  config: Record<string, number | boolean>
+  defaults: Record<string, number | boolean>
+  overridden: string[]
+  issues: Array<{ field: string; message: string }>
+  fingerprint: string
+  fields: LineageParamFieldFace[]
+}
+
+/** One field card in the scope picker. */
+interface LineageScopeCardFace {
+  slug: string
+  title: string
+  reviewStatus: string
+  confirmed: boolean
+  dependsOn: number
+  usedBy: number
+}
+
+type ParamDraft = Record<string, string | boolean>
+
+function draftFromConfig(config: Record<string, number | boolean>): ParamDraft {
+  const draft: ParamDraft = {}
+  for (const [key, value] of Object.entries(config)) draft[key] = typeof value === 'boolean' ? value : String(value)
+  return draft
+}
+
+/** Editable parameter form. Values only take effect once saved (save-to-apply). */
+function LineageParams({ state, draft, dirty, busy, onDraft, onSave, onReset }: {
+  state: LineageParamStateFace
+  draft: ParamDraft
+  dirty: boolean
+  busy: boolean
+  onDraft: (next: ParamDraft) => void
+  onSave: () => void
+  onReset: () => void
+}): ReactElement {
+  return (
+    <details className={css.formSection}>
+      <summary className={css.formSummary}>
+        {t(undefined, 'lineage.paramsTitle')}
+        {state.overridden.length > 0 ? `（${t(undefined, 'lineage.paramsChangedCount', { n: state.overridden.length })}）` : ''}
+      </summary>
+      <div className={css.formBody}>
+        <p className={css.note}>{t(undefined, 'lineage.paramsHint')}</p>
+        {state.issues.length > 0 && (
+          <div className={css.error}>
+            <div>{t(undefined, 'lineage.paramsFileIssues')}</div>
+            {state.issues.map((issue) => (
+              <div key={`${issue.field}:${issue.message}`} className={css.mono}>{issue.field}: {issue.message}</div>
+            ))}
+          </div>
+        )}
+        {state.fields.map((field) => (
+          <label key={field.key} className={css.editLabel}>
+            <span>
+              {t(undefined, `param.${field.key}` as KnowledgeCardsKey)}
+              {state.overridden.includes(field.key) && (
+                <span className={css.hint}> · {t(undefined, 'lineage.paramChanged', { value: String(field.default) })}</span>
+              )}
+            </span>
+            {field.kind === 'boolean' ? (
+              <select
+                className={css.select}
+                value={draft[field.key] === true ? 'true' : 'false'}
+                onChange={(event) => onDraft({ ...draft, [field.key]: event.target.value === 'true' })}
+              >
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            ) : (
+              <input
+                className={css.input}
+                type="number"
+                min={field.min}
+                max={field.max}
+                step={field.integer === true ? 1 : 0.05}
+                value={String(draft[field.key] ?? '')}
+                onChange={(event) => onDraft({ ...draft, [field.key]: event.target.value })}
+              />
+            )}
+          </label>
+        ))}
+        <div className={css.editActions}>
+          <button className={css.run} disabled={busy || !dirty} onClick={onSave}>{t(undefined, 'lineage.paramsSave')}</button>
+          <button className={css.runSmall} disabled={busy} onClick={onReset}>{t(undefined, 'lineage.paramsReset')}</button>
+          <span className={css.hint}>{t(undefined, 'lineage.paramsMeta', { fp: state.fingerprint, path: state.path })}</span>
+        </div>
+      </div>
+    </details>
+  )
+}
+
+/**
+ * Scope picker: which cards this round judges. Confirmed cards are skipped by
+ * default, so this is where you force a re-judge (after a field's logic
+ * changed) or confirm the ones you have verified.
+ */
+function LineageScope({ cards, forceSlugs, forceAll, pick, busy, onForce, onForceAll, onPick, onConfirm }: {
+  cards: LineageScopeCardFace[]
+  forceSlugs: string[]
+  forceAll: boolean
+  pick: string[]
+  busy: boolean
+  onForce: (slugs: string[]) => void
+  onForceAll: (value: boolean) => void
+  onPick: (slugs: string[]) => void
+  onConfirm: () => void
+}): ReactElement {
+  const confirmed = cards.filter((card) => card.confirmed)
+  const judged = forceAll ? cards.length : cards.length - confirmed.filter((card) => !forceSlugs.includes(card.slug)).length
+  return (
+    <details className={css.formSection}>
+      <summary className={css.formSummary}>{t(undefined, 'lineage.scopeTitle')}</summary>
+      <div className={css.formBody}>
+        <p className={css.note}>
+          {t(undefined, 'lineage.scopeSummary', { total: cards.length, confirmed: confirmed.length, judged })}
+        </p>
+        <label className={css.editLabel}>
+          <span>{t(undefined, 'lineage.scopeForceAll')}</span>
+          <select className={css.select} value={forceAll ? 'true' : 'false'} onChange={(event) => onForceAll(event.target.value === 'true')}>
+            <option value="false">{t(undefined, 'lineage.scopeForceAllOff')}</option>
+            <option value="true">{t(undefined, 'lineage.scopeForceAllOn')}</option>
+          </select>
+        </label>
+        <table className={css.table}>
+          <thead>
+            <tr>
+              <th>{t(undefined, 'lineage.scopeColForce')}</th>
+              <th>{t(undefined, 'lineage.scopeColCard')}</th>
+              <th>{t(undefined, 'lineage.scopeColStatus')}</th>
+              <th>{t(undefined, 'lineage.scopeColLineage')}</th>
+              <th>{t(undefined, 'lineage.scopeColConfirm')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cards.map((card) => (
+              <tr key={card.slug}>
+                <td>
+                  {card.confirmed ? (
+                    <input
+                      type="checkbox"
+                      checked={forceSlugs.includes(card.slug)}
+                      title={t(undefined, 'lineage.scopeForceHint')}
+                      onChange={(event) => onForce(event.target.checked ? [...forceSlugs, card.slug] : forceSlugs.filter((slug) => slug !== card.slug))}
+                    />
+                  ) : (
+                    <span className={css.hint}>—</span>
+                  )}
+                </td>
+                <td>
+                  <div>{card.title}</div>
+                  <div className={css.mono}>{card.slug}</div>
+                </td>
+                <td>{card.reviewStatus === '' ? t(undefined, 'lineage.scopeStatusEmpty') : card.reviewStatus}</td>
+                <td className={css.mono}>depends_on {card.dependsOn} · used_by {card.usedBy}</td>
+                <td>
+                  {card.confirmed ? (
+                    <span className={css.hint}>{t(undefined, 'lineage.scopeConfirmed')}</span>
+                  ) : (
+                    <input
+                      type="checkbox"
+                      checked={pick.includes(card.slug)}
+                      onChange={(event) => onPick(event.target.checked ? [...pick, card.slug] : pick.filter((slug) => slug !== card.slug))}
+                    />
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className={css.editActions}>
+          <button className={css.runSmall} disabled={busy || pick.length === 0} onClick={onConfirm}>
+            {t(undefined, 'lineage.scopeConfirm', { n: pick.length })}
+          </button>
+          <span className={css.hint}>{t(undefined, 'lineage.scopeConfirmHint')}</span>
+        </div>
+      </div>
+    </details>
+  )
+}
+
 function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () => void; onApplied: () => void }): ReactElement {
   const [rows, setRows] = useState<LineageRow[]>([])
   const [notes, setNotes] = useState<string[]>([])
@@ -413,6 +606,81 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
   const [status, setStatus] = useState<string | null>(null)
   const [fieldCards, setFieldCards] = useState<number | null>(null)
   const [llmInfo, setLlmInfo] = useState<string | null>(null)
+  const [paramState, setParamState] = useState<LineageParamStateFace | null>(null)
+  const [paramDraft, setParamDraft] = useState<ParamDraft>({})
+  const [scopeCards, setScopeCards] = useState<LineageScopeCardFace[] | null>(null)
+  const [forceSlugs, setForceSlugs] = useState<string[]>([])
+  const [forceAll, setForceAll] = useState(false)
+  const [confirmPick, setConfirmPick] = useState<string[]>([])
+
+  const paramDirty = paramState !== null && Object.keys(paramDraft).some((key) => String(paramDraft[key]) !== String(draftFromConfig(paramState.config)[key]))
+
+  const refreshParams = useCallback(async (): Promise<void> => {
+    try {
+      const data = await api<{ state: LineageParamStateFace }>(`/api/dsh-knowledge/lineage/config${query({ kb: kbId })}`)
+      setParamState(data.state)
+      setParamDraft(draftFromConfig(data.state.config))
+    } catch {
+      setParamState(null)
+    }
+  }, [kbId])
+
+  const refreshScope = useCallback(async (): Promise<void> => {
+    try {
+      const data = await api<{ cards: LineageScopeCardFace[] }>(`/api/dsh-knowledge/lineage/cards${query({ kb: kbId })}`)
+      setScopeCards(data.cards)
+      setForceSlugs((current) => current.filter((slug) => data.cards.some((card) => card.slug === slug && card.confirmed)))
+      setConfirmPick((current) => current.filter((slug) => data.cards.some((card) => card.slug === slug && !card.confirmed)))
+    } catch {
+      setScopeCards(null)
+    }
+  }, [kbId])
+
+  const saveParams = async (): Promise<void> => {
+    if (paramState === null) return
+    setBusy('params')
+    setError(null)
+    try {
+      // Numbers travel as numbers; booleans already are booleans.
+      const payload: Record<string, number | boolean> = {}
+      for (const field of paramState.fields) {
+        const raw = paramDraft[field.key]
+        payload[field.key] = field.kind === 'boolean' ? raw === true : Number(raw)
+      }
+      const data = await api<{ state: LineageParamStateFace }>('/api/dsh-knowledge/lineage/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kb: kbId, config: payload }),
+      })
+      setParamState(data.state)
+      setParamDraft(draftFromConfig(data.state.config))
+      setStatus(t(undefined, 'lineage.paramsSaved', { fp: data.state.fingerprint }))
+    } catch (err) {
+      const message = String((err as Error).message ?? err)
+      setError(message.includes('invalid-config') ? t(undefined, 'lineage.paramsInvalid') : message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const confirmCards = async (): Promise<void> => {
+    if (confirmPick.length === 0) return
+    setBusy('confirm')
+    setError(null)
+    try {
+      const data = await api<{ result: { confirmed: string[]; skipped: Array<{ slug: string; reason: string }> } }>(
+        '/api/dsh-knowledge/lineage/confirm',
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kb: kbId, slugs: confirmPick }) },
+      )
+      setStatus(t(undefined, 'lineage.scopeConfirmedDone', { n: data.result.confirmed.length, skipped: data.result.skipped.length }))
+      setConfirmPick([])
+      await refreshScope()
+    } catch (err) {
+      setError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(null)
+    }
+  }
 
   const mergeProposals = useCallback((incoming: LineageProposalFace[], extraNotes: string[] = []): void => {
     setRows((current) => {
@@ -454,14 +722,18 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
     setError(null)
     setStatus(t(undefined, 'lineage.jevRunning'))
     try {
-      const data = await api<{ result: { proposals: LineageProposalFace[]; line: string; keySource: string; model: string; questionCount: number; sentCards: number; requests: number; payloadChars: number } }>('/api/dsh-knowledge/lineage/jev', {
+      const data = await api<{ result: { proposals: LineageProposalFace[]; line: string; keySource: string; paramsFingerprint: string; model: string; questionCount: number; sentCards: number; judgedCards: number; skippedCards: string[]; skippedPairCount: number; requests: number; payloadChars: number } }>('/api/dsh-knowledge/lineage/jev', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ kb: kbId }),
+        // Scope overrides travel per run; the parameters themselves are read
+        // from the saved config server-side.
+        body: JSON.stringify({ kb: kbId, forceSlugs, forceAll }),
       })
       mergeProposals(data.result.proposals)
       setStatus(t(undefined, 'lineage.jevDone', {
-        n: data.result.proposals.length, line: data.result.line, keySource: data.result.keySource, model: data.result.model, questions: data.result.questionCount, cards: data.result.sentCards, requests: data.result.requests, payload: data.result.payloadChars,
+        n: data.result.proposals.length, line: data.result.line, keySource: data.result.keySource, model: data.result.model,
+        questions: data.result.questionCount, cards: data.result.judgedCards, skipped: data.result.skippedCards.length,
+        requests: data.result.requests, payload: data.result.payloadChars, fp: data.result.paramsFingerprint,
       }))
     } catch (err) {
       const message = String((err as Error).message ?? err)
@@ -538,7 +810,9 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
     api<{ promptMode?: boolean; spawnAvailable?: boolean }>('/api/dsh-knowledge/lineage/llm-status')
       .then(() => setLlmInfo(t(undefined, 'lineage.llmReady')))
       .catch(() => setLlmInfo(null))
-  }, [])
+    void refreshParams()
+    void refreshScope()
+  }, [refreshParams, refreshScope])
 
   const relationSummary = (row: LineageRow): string => Object.entries(row.relations)
     .filter(([, values]) => values.length > 0)
@@ -564,6 +838,30 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
       </div>
       {status !== null && <div className={css.lintResult}>{status}</div>}
       {error !== null && <div className={css.error}>{error}</div>}
+      {scopeCards !== null && scopeCards.length > 0 && (
+        <LineageScope
+          cards={scopeCards}
+          forceSlugs={forceSlugs}
+          forceAll={forceAll}
+          pick={confirmPick}
+          busy={busy !== null}
+          onForce={setForceSlugs}
+          onForceAll={setForceAll}
+          onPick={setConfirmPick}
+          onConfirm={() => void confirmCards()}
+        />
+      )}
+      {paramState !== null && (
+        <LineageParams
+          state={paramState}
+          draft={paramDraft}
+          dirty={paramDirty}
+          busy={busy !== null}
+          onDraft={setParamDraft}
+          onSave={() => void saveParams()}
+          onReset={() => setParamDraft(draftFromConfig(paramState.defaults))}
+        />
+      )}
       {rows.length === 0 && busy === null && <div className={css.empty}>{t(undefined, 'lineage.empty')}</div>}
       {rows.length > 0 && (
         <table className={css.table}>

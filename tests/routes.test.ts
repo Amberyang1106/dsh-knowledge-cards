@@ -12,7 +12,7 @@ import type { AddressInfo } from 'node:net'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { apply } from '../src/index.ts'
 
 interface RouteSpec { kind: string; path: string; handler: (req: unknown, res: unknown) => Promise<void> }
@@ -81,7 +81,7 @@ describe('knowledge routes over HTTP', () => {
     process.env.DSH_KNOWLEDGE_CARDS_ROOT = root
     const { ctx, routes } = makeStubCtx()
     apply(ctx as never)
-    expect(routes.length).toBe(32)
+    expect(routes.length).toBe(35)
     server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const route = routes.find((candidate) => candidate.kind === 'exact' && candidate.path === url.pathname)
@@ -645,6 +645,135 @@ describe('knowledge routes over HTTP', () => {
     const prompt = String(runAttempt.data.prompt)
     expect(prompt).toContain('wiki_lineage_propose')
     expect(prompt).toContain(lkbId)
+  })
+
+  it('edits the lineage parameters, lists the judgement scope and confirms cards', async () => {
+    const created = await jsonRequest(port, 'POST', '/api/dsh-knowledge/kbs', { name: '血缘参数库' })
+    const pkbId = (created.data.kb as { id: string }).id
+    for (const title of ['Param Field A', 'Param Field B']) {
+      const res = await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/create', {
+        kb: pkbId, type: 'field', title, description: `${title} 定义`, frontmatter: { field_kind: 'measure', data_type: 'amount' }, body: `${title} amount.`,
+      })
+      expect(res.data.ok).toBe(true)
+    }
+
+    // GET → shipped defaults, untouched, with the field descriptors the panel renders
+    const before = await jsonRequest(port, 'GET', `/api/dsh-knowledge/lineage/config?kb=${encodeURIComponent(pkbId)}`)
+    expect(before.data.ok).toBe(true)
+    const beforeState = before.data.state as {
+      config: Record<string, unknown>; defaults: Record<string, unknown>; fields: unknown[]
+      overridden: string[]; fingerprint: string; path: string; issues: unknown[]
+    }
+    expect(beforeState.overridden).toEqual([])
+    expect(beforeState.issues).toEqual([])
+    expect(beforeState.fields).toHaveLength(Object.keys(beforeState.defaults).length)
+    expect(beforeState.config.skipConfirmed).toBe(true)
+    expect(beforeState.path).toContain(pkbId)
+    expect(beforeState.fingerprint).toHaveLength(12)
+
+    // invalid values are rejected per field and nothing is written
+    const invalid = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/config', {
+      kb: pkbId, config: { depThreshold: 5, confidenceHigh: 0.4, confidenceMedium: 0.5, nonsense: 1 },
+    })
+    expect(invalid.status).toBe(400)
+    expect(invalid.data.error).toBe('invalid-config')
+    expect((invalid.data.issues as unknown[]).length).toBeGreaterThanOrEqual(3)
+    const afterInvalid = await jsonRequest(port, 'GET', `/api/dsh-knowledge/lineage/config?kb=${encodeURIComponent(pkbId)}`)
+    expect((afterInvalid.data.state as { overridden: string[] }).overridden).toEqual([])
+
+    // a valid save persists (sparse) and a later read returns it
+    const saved = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/config', {
+      kb: pkbId, config: { depThreshold: 0.7, askAdditive: false },
+    })
+    expect(saved.data.ok).toBe(true)
+    const savedState = saved.data.state as { config: Record<string, unknown>; overridden: string[] }
+    expect(savedState.overridden.sort()).toEqual(['askAdditive', 'depThreshold'])
+    expect(savedState.config.depThreshold).toBe(0.7)
+    expect(savedState.config.askAdditive).toBe(false)
+    const reread = await jsonRequest(port, 'GET', `/api/dsh-knowledge/lineage/config?kb=${encodeURIComponent(pkbId)}`)
+    expect((reread.data.state as { config: Record<string, unknown> }).config.depThreshold).toBe(0.7)
+
+    // scope listing: both cards unconfirmed, no lineage yet
+    const cards = await jsonRequest(port, 'GET', `/api/dsh-knowledge/lineage/cards?kb=${encodeURIComponent(pkbId)}`)
+    const list = cards.data.cards as Array<{ slug: string; confirmed: boolean; dependsOn: number; usedBy: number }>
+    expect(list).toHaveLength(2)
+    expect(list.every((card) => !card.confirmed)).toBe(true)
+    expect(list.every((card) => card.dependsOn === 0 && card.usedBy === 0)).toBe(true)
+
+    // confirm one → it leaves the default scope; repeats and unknown slugs are reported
+    const confirmed = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/confirm', { kb: pkbId, slugs: ['Param-Field-A'] })
+    expect((confirmed.data.result as { confirmed: string[] }).confirmed).toEqual(['Param-Field-A'])
+    const again = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/confirm', { kb: pkbId, slugs: ['Param-Field-A', 'ghost'] })
+    const againResult = again.data.result as { confirmed: string[]; skipped: Array<{ slug: string; reason: string }> }
+    expect(againResult.confirmed).toEqual([])
+    expect(againResult.skipped.map((entry) => entry.slug).sort()).toEqual(['Param-Field-A', 'ghost'])
+    const scopeAfter = await jsonRequest(port, 'GET', `/api/dsh-knowledge/lineage/cards?kb=${encodeURIComponent(pkbId)}`)
+    const confirmedRow = (scopeAfter.data.cards as Array<{ slug: string; confirmed: boolean; reviewStatus: string }>)
+      .find((card) => card.slug === 'Param-Field-A')
+    expect(confirmedRow?.confirmed).toBe(true)
+    expect(confirmedRow?.reviewStatus).toBe('confirmed')
+
+    // an empty selection is a client error, not a silent no-op
+    const empty = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/confirm', { kb: pkbId, slugs: [] })
+    expect(empty.status).toBe(400)
+  })
+
+  it('runs the JEV route with the saved parameters and a forced re-judge list', async () => {
+    const created = await jsonRequest(port, 'POST', '/api/dsh-knowledge/kbs', { name: '血缘范围库' })
+    const skbId = (created.data.kb as { id: string }).id
+    for (const title of ['Scope Field A', 'Scope Field B']) {
+      await jsonRequest(port, 'POST', '/api/dsh-knowledge/card/create', {
+        kb: skbId, type: 'field', title, description: `${title} 定义`, frontmatter: { field_kind: 'measure', data_type: 'amount' }, body: `${title} amount.`,
+      })
+    }
+    await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/confirm', { kb: skbId, slugs: ['Scope-Field-B'] })
+    await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/config', { kb: skbId, config: { askAdditive: false, excerptChars: 120 } })
+
+    const previousKey = process.env.OPENROUTER_API_KEY
+    const previousTypesafe = process.env.TYPESAFE_API_KEY
+    delete process.env.TYPESAFE_API_KEY
+    process.env.OPENROUTER_API_KEY = 'route-test-key'
+    const sent: Array<{ state: { cards: Array<{ excerpt?: string }> }; questions: Record<string, unknown> }> = []
+    vi.stubGlobal('fetch', async (_url: string, init: { body?: string }) => {
+      sent.push(JSON.parse(String(init.body)) as (typeof sent)[number])
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ model: 'typesafe/jev-1.13-test', answers: {}, usage: { input_tokens: 11, output_tokens: 1, cost: 0.0001 } }),
+      } as unknown as Response
+    })
+    try {
+      const run = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/jev', { kb: skbId })
+      expect(run.status).toBe(200)
+      const result = run.data.result as {
+        judgedCards: number; skippedCards: string[]; requests: number; paramsFingerprint: string
+        usage?: { input_tokens?: number }; sentCards: number
+      }
+      expect(result.judgedCards).toBe(1)
+      expect(result.skippedCards).toEqual(['Scope-Field-B'])
+      expect(result.paramsFingerprint).toHaveLength(12)
+      expect(result.usage?.input_tokens).toBe(11)
+      // saved parameters reach the request: askAdditive=false ⇒ no agg:: question
+      const keys = Object.keys(sent[0].questions)
+      expect(keys.filter((key) => key.startsWith('agg::'))).toHaveLength(0)
+      expect(keys).toContain('kind::Scope-Field-A')
+      // a skipped card is not judged but is still sent as a target
+      expect(keys).not.toContain('kind::Scope-Field-B')
+      expect(keys).toContain('dep::Scope-Field-A::Scope-Field-B')
+      expect(sent[0].state.cards).toHaveLength(2)
+
+      // forcing the confirmed card back in widens the round again
+      sent.length = 0
+      const forced = await jsonRequest(port, 'POST', '/api/dsh-knowledge/lineage/jev', { kb: skbId, forceSlugs: ['Scope-Field-B'] })
+      expect((forced.data.result as { skippedCards: string[] }).skippedCards).toEqual([])
+      expect(Object.keys(sent[0].questions)).toContain('kind::Scope-Field-B')
+      expect((forced.data.result as { judgedCards: number }).judgedCards).toBe(2)
+    } finally {
+      vi.unstubAllGlobals()
+      if (previousKey === undefined) delete process.env.OPENROUTER_API_KEY
+      else process.env.OPENROUTER_API_KEY = previousKey
+      if (previousTypesafe !== undefined) process.env.TYPESAFE_API_KEY = previousTypesafe
+    }
   })
 
   it('deletes a knowledge base to the trash and restores it with its review queue', async () => {

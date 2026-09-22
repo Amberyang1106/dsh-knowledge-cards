@@ -9,6 +9,9 @@
  * the typed answers back into ordinary LineageProposals — the preview/apply
  * path stays exactly the same.
  *
+ * Every tuning knob (thresholds, question toggles, volume, batching, the
+ * confirmed-card skip) comes from LineageConfig so the panel can edit it.
+ *
  * Two interchangeable lines carry the same NATIVE System One shape, so the
  * request body is identical either way:
  *  - OpenRouter (default): POST https://openrouter.ai/api/v1/systemone with
@@ -25,13 +28,15 @@
  */
 
 import { parseFrontmatter } from '../core/frontmatter.ts'
-import type { KbConfig, LineageProposal } from '../core/types.ts'
+import type { KbConfig, LineageConfig, LineageProposal } from '../core/types.ts'
+import { LINEAGE_CONFIG_DEFAULTS, lineageConfigFingerprint, loadLineageConfig } from './lineage-config.ts'
 import { listCards, readCard } from './store.ts'
 
 /** Which line serves the request. */
 export type JevLine = 'openrouter' | 'typesafe'
 
-export interface JevConfig {
+/** Transport facts only — tuning parameters live in LineageConfig. */
+export interface JevTransport {
   line: JevLine
   endpoint: string
   model: string
@@ -91,7 +96,7 @@ export function credentialLookup(ctx: { reflect: { get: (name: string, required?
 export async function resolveJevConfig(
   env: NodeJS.ProcessEnv = process.env,
   lookup?: JevKeyLookup,
-): Promise<JevConfig | null> {
+): Promise<JevTransport | null> {
   const candidates: Array<{ ref: string; line: JevLine }> = [
     { ref: 'OPENROUTER_API_KEY', line: 'openrouter' },
     { ref: 'TYPESAFE_API_KEY', line: 'typesafe' },
@@ -125,28 +130,6 @@ export async function resolveJevConfig(
   }
 }
 
-/** Guard: pairwise questions grow as N² — refuse to send a giant batch. */
-const MAX_CARDS = 20
-/**
- * Questions per HTTP request. Pairwise reasoning costs N(N-1) questions, which
- * no single 32k request can hold past ~11 cards, so a round is split into
- * consecutive batches of this size and the answers are merged. Each batch
- * re-sends the state (~470 chars per card), which is cheap next to the
- * questions: at 20 cards that is 7 requests and roughly $0.004 of input.
- */
-const QUESTIONS_PER_REQUEST = 60
-/**
- * Per-request budget in characters. The System One context is 32k tokens and
- * the tokenizer is undocumented ("Other"), so we assume a conservative ≤3
- * chars/token → 96k chars ≈ 32k tokens. Measured against the real ISG cards a
- * 60-question batch lands near 40k chars, well inside it; every run reports
- * back the largest request it built so this can be calibrated against a live
- * usage.input_tokens reading.
- */
-const MAX_PAYLOAD_CHARS = 96_000
-/** Excerpt budget per card in the minimized state. */
-const EXCERPT_CHARS = 400
-
 export interface JevCardState {
   slug: string
   title: string
@@ -163,18 +146,31 @@ export interface JevCardState {
   excerpt?: string
 }
 
+/** One field card plus the frontmatter facts the scope filter needs. */
+export interface JevCardScope {
+  state: JevCardState
+  /** review_status from the card (only `confirmed` is ever skipped). */
+  reviewStatus: string
+}
+
 export interface JevResult {
   kb: string
   /** Which line served the request (openrouter | typesafe). */
   line: JevLine
   /** Layer that supplied the key (env / file / project-env / user-env). */
   keySource: string
+  /** Fingerprint of the effective parameters this round ran with. */
+  paramsFingerprint: string
   model: string
   proposals: LineageProposal[]
   /** Token accounting from the API response when present. */
   usage?: Record<string, unknown>
-  /** What was actually sent (for transparency / auditing). */
+  /** Cards sent in the state, cards judged, cards skipped as confirmed. */
   sentCards: number
+  judgedCards: number
+  skippedCards: string[]
+  /** Ordered pairs left out because both ends were confirmed. */
+  skippedPairCount: number
   stateChars: number
   questionCount: number
   /** HTTP requests the round was split into (questions are batched). */
@@ -188,19 +184,22 @@ export interface JevResult {
  * Minimized state: metadata + a short excerpt with code fences and long digit
  * runs removed. Raw SQL, amounts and long identifiers never leave the machine.
  */
-function minimizeExcerpt(body: string): string {
+function minimizeExcerpt(body: string, excerptChars: number): string {
   return body
     .replace(/```[\s\S]*?```/g, ' ') // drop fenced code (SQL etc.)
     .replace(/`[^`]*`/g, ' ') // drop inline code
     .replace(/\d[\d,.\s]{4,}/g, ' ') // drop long numeric runs (amounts/ids)
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, EXCERPT_CHARS)
+    .slice(0, excerptChars)
 }
 
-/** Load the field cards of one KB as minimized JEV state entries. */
-export async function buildJevState(kb: KbConfig): Promise<JevCardState[]> {
-  const states: JevCardState[] = []
+/** Load the field cards of one KB as minimized JEV state + review status. */
+export async function buildJevCardScopes(
+  kb: KbConfig,
+  excerptChars: number = LINEAGE_CONFIG_DEFAULTS.excerptChars,
+): Promise<JevCardScope[]> {
+  const scopes: JevCardScope[] = []
   for (const meta of (await listCards(kb)).filter((card) => card.type === 'field')) {
     const card = await readCard(kb, meta.slug)
     if (card === null) continue
@@ -208,29 +207,50 @@ export async function buildJevState(kb: KbConfig): Promise<JevCardState[]> {
     const listOf = (value: unknown): string[] | undefined =>
       Array.isArray(value) ? value.map((item) => String(item)).filter((item) => item.trim() !== '') : undefined
     const text = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
-    states.push({
-      slug: meta.slug,
-      title: meta.title,
-      description: meta.description,
-      aliases: listOf(fm.aliases),
-      field_kind: text(fm.field_kind),
-      data_type: text(fm.data_type),
-      aggregation: text(fm.aggregation),
-      unit: text(fm.unit),
-      source_table: text(fm.source_table),
-      source_field: text(fm.source_field),
-      depends_on: listOf(fm.depends_on),
-      used_by: listOf(fm.used_by),
-      excerpt: minimizeExcerpt(card.body) || undefined,
+    scopes.push({
+      reviewStatus: text(fm.review_status) ?? '',
+      state: {
+        slug: meta.slug,
+        title: meta.title,
+        description: meta.description,
+        aliases: listOf(fm.aliases),
+        field_kind: text(fm.field_kind),
+        data_type: text(fm.data_type),
+        aggregation: text(fm.aggregation),
+        unit: text(fm.unit),
+        source_table: text(fm.source_table),
+        source_field: text(fm.source_field),
+        depends_on: listOf(fm.depends_on),
+        used_by: listOf(fm.used_by),
+        excerpt: minimizeExcerpt(card.body, excerptChars) || undefined,
+      },
     })
   }
-  return states
+  return scopes
+}
+
+/** Just the states (the shape actually sent to the API). */
+export async function buildJevState(kb: KbConfig, excerptChars?: number): Promise<JevCardState[]> {
+  return (await buildJevCardScopes(kb, excerptChars)).map((scope) => scope.state)
 }
 
 type JevQuestion =
   | { type: 'noul'; instructions: string; criteria?: Record<string, string> }
   | { type: 'choice'; instructions: string; criteria: Record<string, string> }
   | { type: 'score'; instructions: string; criteria: string[] }
+
+export interface JevQuestionOptions {
+  askFieldKind?: boolean
+  askAdditive?: boolean
+  /**
+   * Whether a card's answers are still wanted. A pair is asked when AT LEAST
+   * ONE side is judged — skipping only pairs whose two ends are both already
+   * confirmed is what keeps a new card's edges to old cards from being missed.
+   */
+  isJudged?: (slug: string) => boolean
+}
+
+const ALL_JUDGED = (): boolean => true
 
 /**
  * Atomic questions. Card content lives in `state.cards` exactly once and every
@@ -240,11 +260,19 @@ type JevQuestion =
  * cards.) Keys are local to us; the API never sees them.
  * `dep::A::B` asks whether A derives its values from B as a DIRECT dependency.
  */
-export function buildJevQuestions(states: JevCardState[]): Record<string, JevQuestion> {
+export function buildJevQuestions(
+  states: JevCardState[],
+  options: JevQuestionOptions = {},
+): Record<string, JevQuestion> {
+  const askFieldKind = options.askFieldKind ?? true
+  const askAdditive = options.askAdditive ?? true
+  const isJudged = options.isJudged ?? ALL_JUDGED
   const questions: Record<string, JevQuestion> = {}
   for (const source of states) {
+    const sourceJudged = isJudged(source.slug)
     for (const target of states) {
       if (source.slug === target.slug) continue
+      if (!sourceJudged && !isJudged(target.slug)) continue
       questions[`dep::${source.slug}::${target.slug}`] = {
         type: 'noul',
         instructions: `In state.cards, does slug "${source.slug}" derive its values FROM slug "${target.slug}" as a DIRECT dependency (its own documented formula or 取数步骤 reads that card), rather than merely mentioning it, being a sibling attribute of the same object, or depending on it only indirectly through a third card?`,
@@ -255,31 +283,79 @@ export function buildJevQuestions(states: JevCardState[]): Record<string, JevQue
         },
       }
     }
-    questions[`kind::${source.slug}`] = {
-      type: 'choice',
-      instructions: `Which field_kind best describes state.cards["${source.slug}"]?`,
-      criteria: {
-        measure: 'A numeric amount/quantity that is aggregated (revenue, cost, count).',
-        dimension: 'A descriptive attribute used for grouping/filtering (id, name, number, office).',
-        calculated_field: 'Derived by a formula over other fields rather than stored.',
-        flag: 'A yes/no indicator.',
-        key: 'A join/business key.',
-        mapping: 'A lookup/translation mapping.',
-        date: 'A date/period.',
-        attribute: 'Other descriptive attribute that is not a grouping dimension.',
-        parameter: 'A run-time parameter.',
-      },
+    if (!sourceJudged) continue
+    if (askFieldKind) {
+      questions[`kind::${source.slug}`] = {
+        type: 'choice',
+        instructions: `Which field_kind best describes state.cards["${source.slug}"]?`,
+        criteria: {
+          measure: 'A numeric amount/quantity that is aggregated (revenue, cost, count).',
+          dimension: 'A descriptive attribute used for grouping/filtering (id, name, number, office).',
+          calculated_field: 'Derived by a formula over other fields rather than stored.',
+          flag: 'A yes/no indicator.',
+          key: 'A join/business key.',
+          mapping: 'A lookup/translation mapping.',
+          date: 'A date/period.',
+          attribute: 'Other descriptive attribute that is not a grouping dimension.',
+          parameter: 'A run-time parameter.',
+        },
+      }
     }
-    questions[`agg::${source.slug}`] = {
-      type: 'noul',
-      instructions: `Is it correct to treat state.cards["${source.slug}"] as 'additive' — i.e. summing it across rows produces a meaningful total?`,
-      criteria: {
-        true: 'Summing the values is meaningful.',
-        false: 'Summing is meaningless (dimension/ratio/percentage/flag).',
-      },
+    if (askAdditive) {
+      questions[`agg::${source.slug}`] = {
+        type: 'noul',
+        instructions: `Is it correct to treat state.cards["${source.slug}"] as 'additive' — i.e. summing it across rows produces a meaningful total?`,
+        criteria: {
+          true: 'Summing the values is meaningful.',
+          false: 'Summing is meaningless (dimension/ratio/percentage/flag).',
+        },
+      }
     }
   }
   return questions
+}
+
+/** Which cards and pairs a round actually covers. Pure — unit-testable. */
+export interface JevScopePlan {
+  /** States to send (a skipped card can still be the target of a question). */
+  sent: JevCardState[]
+  /** Slugs whose answers are still wanted. */
+  judged: string[]
+  /** Cards left out of judgement because they are owner-confirmed. */
+  skipped: string[]
+  judgedCardCount: number
+  skippedPairCount: number
+  questionCount: number
+}
+
+/**
+ * Apply the confirmed-card skip at PAIR level and count what the round costs.
+ * A card counts as done when skipConfirmed is on, it is `review_status:
+ * confirmed`, and it was not forced back in for this run.
+ */
+export function planJevScope(
+  scopes: JevCardScope[],
+  params: LineageConfig,
+  force: { slugs?: string[]; all?: boolean } = {},
+): JevScopePlan {
+  const forced = new Set(force.slugs ?? [])
+  const isDone = (scope: JevCardScope): boolean =>
+    params.skipConfirmed && force.all !== true && !forced.has(scope.state.slug) && scope.reviewStatus === 'confirmed'
+  const done = scopes.filter(isDone)
+  const judged = scopes.filter((scope) => !isDone(scope))
+  const cardCount = scopes.length
+  const metaPerCard = (params.askFieldKind ? 1 : 0) + (params.askAdditive ? 1 : 0)
+  // Ordered pairs where BOTH ends are done never get a question.
+  const skippedPairCount = done.length * Math.max(0, done.length - 1)
+  const questionCount = cardCount * Math.max(0, cardCount - 1) - skippedPairCount + judged.length * metaPerCard
+  return {
+    sent: scopes.map((scope) => scope.state),
+    judged: judged.map((scope) => scope.state.slug),
+    skipped: done.map((scope) => scope.state.slug),
+    judgedCardCount: judged.length,
+    skippedPairCount,
+    questionCount,
+  }
 }
 
 interface JevAnswer {
@@ -295,7 +371,7 @@ interface JevAnswer {
 export async function callJev(
   state: unknown,
   questions: Record<string, JevQuestion>,
-  options: Pick<JevConfig, 'apiKey' | 'endpoint' | 'model'> & { timeoutMs?: number },
+  options: Pick<JevTransport, 'apiKey' | 'endpoint' | 'model'> & { timeoutMs?: number },
 ): Promise<{ model: string; answers: Record<string, JevAnswer>; usage?: Record<string, unknown> }> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 90_000)
@@ -324,48 +400,67 @@ export async function callJev(
   }
 }
 
-const bandToLabel = (value: number): 'high' | 'medium' | 'low' => (value >= 0.8 ? 'high' : value >= 0.5 ? 'medium' : 'low')
+export interface JevProposalOptions {
+  confidenceHigh: number
+  confidenceMedium: number
+  depThreshold: number
+  additiveThreshold: number
+  /** Stamped into every proposal note so a later reader knows the settings used. */
+  paramsFingerprint: string
+}
+
+const PROPOSAL_DEFAULTS: JevProposalOptions = {
+  confidenceHigh: LINEAGE_CONFIG_DEFAULTS.confidenceHigh,
+  confidenceMedium: LINEAGE_CONFIG_DEFAULTS.confidenceMedium,
+  depThreshold: LINEAGE_CONFIG_DEFAULTS.depThreshold,
+  additiveThreshold: LINEAGE_CONFIG_DEFAULTS.additiveThreshold,
+  paramsFingerprint: lineageConfigFingerprint(LINEAGE_CONFIG_DEFAULTS),
+}
 
 /**
  * Map typed answers to ordinary lineage proposals:
- *  - `dep::A::B` (noul ≥ 0.5) → A depends_on B (+ the reverse used_by edge)
+ *  - `dep::A::B` (noul ≥ depThreshold) → A depends_on B (+ the reverse used_by edge)
  *  - `kind::X` (choice) → metadata correction when it disagrees with the card
  *  - `agg::X` (noul) with a dimension-ish card → aggregation correction
+ * Every note carries the parameter fingerprint of the round.
  */
 export function jevProposals(
   kb: KbConfig,
   states: JevCardState[],
   answers: Record<string, JevAnswer>,
+  options: JevProposalOptions = PROPOSAL_DEFAULTS,
 ): LineageProposal[] {
+  const band = (value: number): 'high' | 'medium' | 'low' =>
+    value >= options.confidenceHigh ? 'high' : value >= options.confidenceMedium ? 'medium' : 'low'
+  const note = `JEV 判断（参数 ${options.paramsFingerprint} · 待人工确认）`
   const proposals: LineageProposal[] = []
   const bySlug = new Map(states.map((state) => [state.slug, state]))
   for (const [key, answer] of Object.entries(answers)) {
     const [kind, from, to] = key.split('::')
-    if (kind === 'dep' && typeof answer.noul === 'number' && answer.noul >= 0.5) {
+    if (kind === 'dep' && typeof answer.noul === 'number' && answer.noul >= options.depThreshold) {
       const source = bySlug.get(from)
       const target = bySlug.get(to)
       if (source === undefined || target === undefined) continue
       const score = answer.noul
-      const evidence = `JEV noul=${score.toFixed(2)}（${bandToLabel(score)}）：${source.title} 的取数逻辑直接依赖 ${target.title}`
       proposals.push({
         slug: from,
         title: source.title,
         source: 'jev',
-        confidence: bandToLabel(score),
+        confidence: band(score),
         score,
-        evidence,
+        evidence: `JEV noul=${score.toFixed(2)}（${band(score)}）：${source.title} 的取数逻辑直接依赖 ${target.title}`,
         relations: { depends_on: [to] },
-        note: 'JEV 判断（待人工确认）',
+        note,
       })
       proposals.push({
         slug: to,
         title: target.title,
         source: 'jev',
-        confidence: bandToLabel(score),
+        confidence: band(score),
         score,
         evidence: `反向边：JEV 判定 ${source.title} 依赖本卡`,
         relations: { used_by: [from] },
-        note: 'JEV 判断（待人工确认）',
+        note,
       })
     }
     if (kind === 'kind' && typeof answer.choice === 'string') {
@@ -375,12 +470,12 @@ export function jevProposals(
         slug: from,
         title: state.title,
         source: 'jev',
-        confidence: bandToLabel(answer.confidence ?? 0.5),
+        confidence: band(answer.confidence ?? options.confidenceMedium),
         score: answer.confidence,
         evidence: `JEV 判定 field_kind 应为 ${answer.choice}（当前 ${state.field_kind ?? '未填'}）`,
         relations: {},
         metadata: { field_kind: answer.choice },
-        note: 'JEV 判断（待人工确认）',
+        note,
       })
     }
     if (kind === 'agg' && typeof answer.noul === 'number') {
@@ -389,17 +484,17 @@ export function jevProposals(
       const dimensionLike = state.field_kind === 'dimension' || state.field_kind === 'key' || state.data_type === 'string'
       // noul asks "is additive correct?" — a confident NO on a dimension-like
       // field means the recorded 'additive' value should be corrected.
-      if (answer.noul <= 0.2 && dimensionLike && state.aggregation === 'additive') {
+      if (answer.noul <= options.additiveThreshold && dimensionLike && state.aggregation === 'additive') {
         proposals.push({
           slug: from,
           title: state.title,
           source: 'jev',
-          confidence: bandToLabel(1 - answer.noul),
+          confidence: band(1 - answer.noul),
           score: 1 - answer.noul,
           evidence: `JEV noul=${answer.noul.toFixed(2)}：${state.title} 不应可加总（当前 aggregation=additive）`,
           relations: {},
           metadata: { aggregation: 'non-additive' },
-          note: 'JEV 判断（待人工确认）',
+          note,
         })
       }
     }
@@ -432,29 +527,62 @@ function mergeUsage(target: Record<string, unknown>, extra?: Record<string, unkn
   }
 }
 
+export interface JevRunOptions {
+  /** Parameters loaded by the caller; omitted → read this KB's config file. */
+  params?: LineageConfig
+  /** Cards to re-judge even though they are confirmed. */
+  forceSlugs?: string[]
+  /** Ignore the confirmed-card skip entirely (full re-run). */
+  forceAll?: boolean
+}
+
 /**
- * Full JEV round: state → questions → batches → budget gate → API → proposals.
- * Answers from every batch are merged into one map, so the downstream
- * proposal/preview/apply path is unaffected by how the round was split.
+ * Full JEV round: scope plan → state → questions → batches → budget gate → API
+ * → proposals. Answers from every batch are merged into one map, so the
+ * downstream proposal/preview/apply path is unaffected by how the round was
+ * split and by which cards were skipped.
  */
-export async function runJevLineage(kb: KbConfig, config?: JevConfig): Promise<JevResult> {
-  const resolved = config ?? (await resolveJevConfig())
+export async function runJevLineage(
+  kb: KbConfig,
+  transport?: JevTransport,
+  options: JevRunOptions = {},
+): Promise<JevResult> {
+  const resolved = transport ?? (await resolveJevConfig())
   if (resolved === null) {
     throw new Error(
       '未配置 JEV key：请在 DSH 凭据库（~/.dsh/.credentials.yaml）或环境变量设置 OPENROUTER_API_KEY（默认线路）或 TYPESAFE_API_KEY',
     )
   }
-  const states = await buildJevState(kb)
-  if (states.length === 0) throw new Error('该知识库没有字段卡（type=field）')
-  if (states.length > MAX_CARDS) {
+  const params = options.params ?? (await loadLineageConfig(kb)).config
+  const scopes = await buildJevCardScopes(kb, params.excerptChars)
+  if (scopes.length === 0) throw new Error('该知识库没有字段卡（type=field）')
+
+  const plan = planJevScope(scopes, params, { slugs: options.forceSlugs, all: options.forceAll })
+  if (plan.judgedCardCount === 0) {
     throw new Error(
-      `字段卡 ${states.length} 张，超过 JEV 单轮上限 ${MAX_CARDS} 张（问题数随卡片数平方增长）；请按 subject_area 分批，或先用确定性预扫`,
+      `全部 ${scopes.length} 张字段卡都已确认（review_status=confirmed），本轮无卡可判；如需重判请在面板勾选「强制重判」或打开「全量重跑」`,
     )
   }
-  const questions = buildJevQuestions(states)
-  const state = { kb: kb.id, cards: states }
+  if (plan.judgedCardCount > params.maxCards) {
+    throw new Error(
+      `本轮参与判定的字段卡 ${plan.judgedCardCount} 张（共 ${scopes.length} 张，已跳过 ${plan.skipped.length} 张已确认卡），超过上限 ${params.maxCards} 张；请先确认更多卡片把它们跳过，或在面板里调高 maxCards`,
+    )
+  }
+  if (plan.questionCount > params.maxQuestions) {
+    throw new Error(
+      `本轮问题数 ${plan.questionCount} 超过上限 ${params.maxQuestions}；请先确认更多卡片（跳过已维护的）、减少参与判定的卡片，或在面板里调高 maxQuestions`,
+    )
+  }
+
+  const judged = new Set(plan.judged)
+  const questions = buildJevQuestions(plan.sent, {
+    askFieldKind: params.askFieldKind,
+    askAdditive: params.askAdditive,
+    isJudged: (slug) => judged.has(slug),
+  })
+  const state = { kb: kb.id, cards: plan.sent }
   const stateJson = JSON.stringify(state)
-  const batches = chunkQuestions(questions, QUESTIONS_PER_REQUEST)
+  const batches = chunkQuestions(questions, params.questionsPerRequest)
   const answers: Record<string, JevAnswer> = {}
   const usage: Record<string, unknown> = {}
   let sawUsage = false
@@ -462,9 +590,9 @@ export async function runJevLineage(kb: KbConfig, config?: JevConfig): Promise<J
   let payloadChars = 0
   for (const batch of batches) {
     const batchChars = JSON.stringify({ state, model: resolved.model, questions: batch }).length
-    if (batchChars > MAX_PAYLOAD_CHARS) {
+    if (batchChars > params.payloadBudgetChars) {
       throw new Error(
-        `JEV 单批请求体 ${batchChars} 字符，超过预算 ${MAX_PAYLOAD_CHARS}（32k 上下文的保守估计；本轮字段卡 ${states.length} 张、每批 ${Object.keys(batch).length} 个问题）；请减少字段卡数量后重试`,
+        `JEV 单批请求体 ${batchChars} 字符，超过预算 ${params.payloadBudgetChars}（32k 上下文的保守估计；本轮 state 含 ${plan.sent.length} 张卡、每批 ${Object.keys(batch).length} 个问题）；请调小 excerptChars/questionsPerRequest，或减少参与判定的卡片后重试`,
       )
     }
     payloadChars = Math.max(payloadChars, batchChars)
@@ -478,18 +606,29 @@ export async function runJevLineage(kb: KbConfig, config?: JevConfig): Promise<J
     mergeUsage(usage, response.usage)
     model = response.model ?? model
   }
+  const paramsFingerprint = lineageConfigFingerprint(params)
   return {
     kb: kb.id,
     line: resolved.line,
     keySource: resolved.keySource,
+    paramsFingerprint,
     model,
-    proposals: jevProposals(kb, states, answers),
+    proposals: jevProposals(kb, plan.sent, answers, {
+      confidenceHigh: params.confidenceHigh,
+      confidenceMedium: params.confidenceMedium,
+      depThreshold: params.depThreshold,
+      additiveThreshold: params.additiveThreshold,
+      paramsFingerprint,
+    }),
     usage: sawUsage ? usage : undefined,
-    sentCards: states.length,
+    sentCards: plan.sent.length,
+    judgedCards: plan.judgedCardCount,
+    skippedCards: plan.skipped,
+    skippedPairCount: plan.skippedPairCount,
     stateChars: stateJson.length,
     questionCount: Object.keys(questions).length,
     requests: batches.length,
     payloadChars,
-    budgetChars: MAX_PAYLOAD_CHARS,
+    budgetChars: params.payloadBudgetChars,
   }
 }

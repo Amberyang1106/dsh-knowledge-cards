@@ -793,6 +793,11 @@ export interface CardEditInput {
    * sources/created/updated) keep coming from their own input fields.
    */
   frontmatter?: Record<string, unknown>
+  /**
+   * Extra one-line notes prepended to the `edit` log entry — used by the
+   * lineage apply to record which parameter set produced the change.
+   */
+  extraNotes?: string[]
 }
 
 /**
@@ -913,6 +918,7 @@ export async function editCard(kb: KbConfig, slug: string, input: CardEditInput)
     // Detailed change notes: per-field old → new, +added/-removed arrays,
     // and a body change summary (line counts + first added snippet).
     const notes: string[] = []
+    if (input.extraNotes !== undefined && input.extraNotes.length > 0) notes.push(...input.extraNotes)
     if (fullFmReplaced) notes.push('frontmatter: 规则配置已更新（YAML 全量替换）')
     if (structuredFmReplaced) notes.push('frontmatter: 字段元数据已更新（结构化表单）')
     if (title !== undefined && title !== '' && title !== existing.title) {

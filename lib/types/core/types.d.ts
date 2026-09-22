@@ -321,4 +321,69 @@ export interface LineageProposalFile {
     proposals: LineageProposal[];
     notes: string[];
 }
+/**
+ * Tunable parameters of one lineage/JEV round. Defaults live in
+ * host/lineage-config.ts; only values that differ from the defaults are stored
+ * in `<configRoot>/lineage/<kbId>.config.json`.
+ */
+export interface LineageConfig {
+    /** noul at or above this is reported as `high` confidence. */
+    confidenceHigh: number;
+    /** noul at or above this (and below confidenceHigh) is `medium`. */
+    confidenceMedium: number;
+    /** Below this a dependency answer produces no edge at all. */
+    depThreshold: number;
+    /** At or below this, an "is additive" answer suggests non-additive. */
+    additiveThreshold: number;
+    /** Ask the per-card field_kind question. */
+    askFieldKind: boolean;
+    /** Ask the per-card additivity question. */
+    askAdditive: boolean;
+    /** Characters of (minimized) card body sent per card. */
+    excerptChars: number;
+    /** Cards under judgement per round — confirmed cards are skipped, not counted here. */
+    maxCards: number;
+    /** Hard cap on the number of questions in one round. */
+    maxQuestions: number;
+    /** Questions per HTTP request (a round is split into this many). */
+    questionsPerRequest: number;
+    /** Per-request body budget in characters. */
+    payloadBudgetChars: number;
+    /** Skip ordered card pairs whose BOTH sides are already review_status=confirmed. */
+    skipConfirmed: boolean;
+}
+/** One invalid config entry, reported (never silently coerced). */
+export interface LineageConfigIssue {
+    field: string;
+    message: string;
+}
+/** Field descriptor so the panel renders controls from the server's bounds. */
+export interface LineageConfigField {
+    key: keyof LineageConfig;
+    kind: 'number' | 'boolean';
+    min?: number;
+    max?: number;
+    integer?: boolean;
+    default: number | boolean;
+}
+/** Everything the panel needs to show and save the parameter form. */
+export interface LineageConfigState {
+    kb: string;
+    path: string;
+    config: LineageConfig;
+    defaults: LineageConfig;
+    overridden: Array<keyof LineageConfig>;
+    issues: LineageConfigIssue[];
+    fingerprint: string;
+    fields: LineageConfigField[];
+}
+/** One field card as the scope picker sees it. */
+export interface FieldCardScopeEntry {
+    slug: string;
+    title: string;
+    reviewStatus: string;
+    confirmed: boolean;
+    dependsOn: number;
+    usedBy: number;
+}
 //# sourceMappingURL=types.d.ts.map
