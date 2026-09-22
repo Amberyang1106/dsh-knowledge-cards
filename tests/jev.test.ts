@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { buildJevQuestions, buildJevState, jevProposals, resolveJevConfig, runJevLineage } from '../src/host/jev.ts'
+import { buildJevQuestions, buildJevState, credentialLookup, jevProposals, resolveJevConfig, runJevLineage } from '../src/host/jev.ts'
 import { createCard, createKb, getKb } from '../src/host/store.ts'
 
 let root: string
@@ -80,25 +80,64 @@ describe('JEV state + questions', () => {
 })
 
 describe('JEV line resolution', () => {
-  it('prefers OpenRouter, falls back to the TypeSafe line, and reports nothing without a key', () => {
-    const both = resolveJevConfig({ OPENROUTER_API_KEY: 'or-key', TYPESAFE_API_KEY: 'ts-key' })
+  it('prefers OpenRouter, falls back to the TypeSafe line, and reports nothing without a key', async () => {
+    const both = await resolveJevConfig({ OPENROUTER_API_KEY: 'or-key', TYPESAFE_API_KEY: 'ts-key' })
     expect(both?.line).toBe('openrouter')
     expect(both?.endpoint).toBe('https://openrouter.ai/api/v1/systemone')
     expect(both?.model).toBe('jev-1.13')
     expect(both?.apiKey).toBe('or-key')
+    expect(both?.keySource).toBe('env')
 
-    const typesafeOnly = resolveJevConfig({ TYPESAFE_API_KEY: 'ts-key' })
+    const typesafeOnly = await resolveJevConfig({ TYPESAFE_API_KEY: 'ts-key' })
     expect(typesafeOnly?.line).toBe('typesafe')
     expect(typesafeOnly?.endpoint).toBe('https://api.typesafe.ai/v1/systemone')
     expect(typesafeOnly?.model).toBe('jev-latest')
     expect(typesafeOnly?.apiKey).toBe('ts-key')
 
-    expect(resolveJevConfig({})).toBeNull()
-    expect(resolveJevConfig({ OPENROUTER_API_KEY: '   ' })).toBeNull()
+    expect(await resolveJevConfig({})).toBeNull()
+    expect(await resolveJevConfig({ OPENROUTER_API_KEY: '   ' })).toBeNull()
 
-    const overridden = resolveJevConfig({ OPENROUTER_API_KEY: 'k', JEV_MODEL: 'jev-latest', JEV_ENDPOINT: 'https://gw.test/v1/systemone' })
+    const overridden = await resolveJevConfig({ OPENROUTER_API_KEY: 'k', JEV_MODEL: 'jev-latest', JEV_ENDPOINT: 'https://gw.test/v1/systemone' })
     expect(overridden?.model).toBe('jev-latest')
     expect(overridden?.endpoint).toBe('https://gw.test/v1/systemone')
+  })
+
+  it('reads the key from the credentials service and names the layer it came from', async () => {
+    const store: Record<string, { value: string; source: string }> = {
+      OPENROUTER_API_KEY: { value: 'or-from-store', source: 'file' },
+    }
+    const lookup = async (ref: string): Promise<{ value: string; source: string } | undefined> => store[ref]
+
+    // an empty environment is fine: the managed store is the authority
+    const fromStore = await resolveJevConfig({}, lookup)
+    expect(fromStore?.line).toBe('openrouter')
+    expect(fromStore?.apiKey).toBe('or-from-store')
+    expect(fromStore?.keySource).toBe('file')
+
+    // only a TypeSafe key in the store → the direct line
+    const typesafeStore = await resolveJevConfig({}, async (ref) =>
+      ref === 'TYPESAFE_API_KEY' ? { value: 'ts-from-store', source: 'user-env' } : undefined,
+    )
+    expect(typesafeStore?.line).toBe('typesafe')
+    expect(typesafeStore?.keySource).toBe('user-env')
+
+    // the service outranks the raw environment (it already layers env on top)
+    const bothSet = await resolveJevConfig({ OPENROUTER_API_KEY: 'or-env' }, lookup)
+    expect(bothSet?.apiKey).toBe('or-from-store')
+
+    // a blank stored value can never masquerade as configured
+    const blank = await resolveJevConfig({}, async (ref) =>
+      ref === 'OPENROUTER_API_KEY' ? { value: '   ', source: 'file' } : undefined,
+    )
+    expect(blank).toBeNull()
+  })
+
+  it('tolerates a host without the credentials service and ignores a malformed one', () => {
+    expect(credentialLookup({ reflect: { get: () => undefined } })).toBeUndefined()
+    expect(credentialLookup({ reflect: { get: () => ({}) } })).toBeUndefined()
+    expect(credentialLookup({ reflect: { get: () => ({ resolve: 'nope' }) } })).toBeUndefined()
+    const ok = credentialLookup({ reflect: { get: () => ({ resolve: async () => ({ value: 'v', source: 'env' }) }) } })
+    expect(typeof ok).toBe('function')
   })
 })
 

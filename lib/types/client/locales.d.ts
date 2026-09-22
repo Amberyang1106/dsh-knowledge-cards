@@ -94,8 +94,8 @@ declare const zh: {
     readonly 'lineage.scan': "① 确定性预扫";
     readonly 'lineage.jev': "② JEV 判断（一键）";
     readonly 'lineage.jevRunning': "正在调用 JEV（System One）…";
-    readonly 'lineage.jevDone': "JEV 完成：{n} 条候选（{line} · model {model} · {cards} 张卡 · {questions} 个问题 · {requests} 批请求，最大 {payload} 字符）";
-    readonly 'lineage.jevKeyMissing': "未配置 JEV key：请设置 OPENROUTER_API_KEY（默认线路，openrouter.ai/keys）或 TYPESAFE_API_KEY（直连兜底，console.typesafe.ai/keys），然后重启 dsh web（插件只读环境变量、不落盘）。JEV 分支只发送最小化 state（元数据 + 去代码/去数字的正文摘要）：卡片内容在 state 里各出现一次，问题仅按 slug 引用。";
+    readonly 'lineage.jevDone': "JEV 完成：{n} 条候选（{line} · key 来源 {keySource} · model {model} · {cards} 张卡 · {questions} 个问题 · {requests} 批请求，最大 {payload} 字符）";
+    readonly 'lineage.jevKeyMissing': "未配置 JEV key：写入 DSH 凭据库 ~/.dsh/.credentials.yaml（推荐，优先级最高、改完立即生效、无需重启），或设环境变量 OPENROUTER_API_KEY（openrouter.ai/keys）／TYPESAFE_API_KEY（console.typesafe.ai/keys）。插件只读凭据、只发最小化 state（元数据 + 去代码/去数字摘要）：卡片内容在 state 里各出现一次、问题仅按 slug 引用。";
     readonly 'lineage.run': "③ 会话内 AI（复制指令）";
     readonly 'lineage.preparing': "正在生成血缘分析指令…";
     readonly 'lineage.promptCopied': "已复制血缘分析指令 → 粘贴到当前会话发送；agent 用 wiki_lineage_propose 提交后，本面板会自动出现提案（请保持本页打开，最多等待 2 分钟）。";

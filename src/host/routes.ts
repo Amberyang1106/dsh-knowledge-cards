@@ -15,7 +15,7 @@ import { searchCards } from '../core/search.ts'
 import { auditKb, buildDeepAuditPromptForKb } from './audit.ts'
 import { lintKb } from './lint.ts'
 import { applyLineage, buildLineagePrompt, listFieldCardMeta, readLineageProposals, scanLineage } from './lineage.ts'
-import { runJevLineage, resolveJevConfig } from './jev.ts'
+import { credentialLookup, resolveJevConfig, runJevLineage } from './jev.ts'
 import { compileRuleSet } from './rules.ts'
 import {
   addReview, commitPages, createCard, createKb, deleteCard, deleteCodeFile, deleteKb, editCard, getKb, importCards,
@@ -778,13 +778,18 @@ export function registerKnowledgeRoutes(ctx: Context): () => void {
           const kbId = asString(body?.kb)
           const kb = await getKb(kbId)
           if (kb === null) return json(res, { ok: false, error: `unknown knowledge base: ${kbId}` }, 404)
-          const config = resolveJevConfig()
+          // DSH's credential provider layers the inherited environment over
+          // ~/.dsh/.credentials.yaml and the project/user .env files, so the
+          // key can live in the managed store (Models page included) and is
+          // re-resolved per request — no restart needed after a change. The
+          // service is optional: without it we fall back to the environment.
+          const config = await resolveJevConfig(process.env, credentialLookup(ctx))
           if (config === null) {
             return json(res, {
               ok: false,
               error: 'jev-key-missing',
               detail:
-                '未配置 JEV key：设置 OPENROUTER_API_KEY（默认线路，https://openrouter.ai/keys，按 $0.042/M 输入计费）或 TYPESAFE_API_KEY（直连兜底，https://console.typesafe.ai/keys）后重启 dsh web（插件只从环境变量读取，不落盘）',
+                '未配置 JEV key：写入 DSH 凭据库 ~/.dsh/.credentials.yaml（推荐，优先级最高、改完立即生效、无需重启）或设环境变量 OPENROUTER_API_KEY（默认线路，https://openrouter.ai/keys，$0.042/M 输入）；直连兜底用 TYPESAFE_API_KEY（https://console.typesafe.ai/keys）。插件只读取凭据、不写入。',
             }, 503)
           }
           ok(res, { result: await runJevLineage(kb, config) })

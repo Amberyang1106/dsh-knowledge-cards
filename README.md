@@ -48,6 +48,7 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 - **② JEV 判断（一键，System One 模型）**：Jev 不是聊天模型——它把一段 `state` 与一组**类型化问题**（`noul` 概率 / `choice` 枚举 / `score` 评分）对照后返回带置信度的结构化答案，因此它的**请求体也是 `{model, state, questions}`，不是 chat/completions**。本插件把血缘补齐拆成原子问题（每对有序卡片一个 noul「A 是否直接依赖 B」+ 每卡一个 field_kind 与可加性判定），把答案映射回普通 `LineageProposal`（`source: 'jev'`、带 `score`），所以预览 → 勾选 → 应用仍走同一条确定性通道。
   - **两条可互换线路**：默认 **OpenRouter**（`POST https://openrouter.ai/api/v1/systemone`，模型 `typesafe/jev-1.13`）；只有 TypeSafe key 时自动走 **直连兜底**（`POST https://api.typesafe.ai/v1/systemone`，模型 `jev-latest`）。两者的请求/响应形状一致，响应里 `model` 会回带版本化 id（如 `typesafe/jev-1.13-20260917`），面板会显示实际服务线路。
   - **外发内容最小化**：只发元数据 + 去掉代码围栏/行内代码/长数字串的正文摘要（≤400 字符/卡），卡片内容在 `state` 里各出现一次，问题仅按 slug 引用。
+  - **key 从 DSH 凭据服务解析**：经 `ctx.credentials` 取值，因此托管凭据库 `~/.dsh/.credentials.yaml`（Models 页面写入处）、两个 `.env` 层与继承环境变量都生效，且**改 key 无需重启**；面板显示 `key 来源` 层名。详见下方「环境变量」。
   - **分批**：问题数随卡片数平方增长（20 张 = 420 个问题），单请求装不下 32k，因此按 60 个问题一批拆成多次请求（20 张 = 7 批，最大单批约 40k 字符 ≈ 10–14k tokens），答案合并、`usage`（含 OpenRouter 的 `usage.cost`）累加；单轮上限 20 张字段卡。
 - **22 个 agent 工具**（任意项目会话可用，跨项目上下文注入）：`wiki_kbs` / `wiki_create_kb` / `wiki_search` / `wiki_read` / `wiki_edit_card`（可写结构化 `relations` 与字段 `metadata`）/ `wiki_ingest` / `wiki_commit` / `wiki_import_cards` / `wiki_lint` / `wiki_audit` / `wiki_review_submit` / `wiki_reviews` / `wiki_code_list` / `wiki_code_read` / **`wiki_card_delete` / `wiki_card_restore` / `wiki_card_purge`** / **`wiki_kb_delete` / `wiki_kb_restore` / `wiki_kb_purge`** / **`wiki_trash_list`** / **`wiki_lineage_propose`**（提交血缘提案，不直接改卡）
 
@@ -159,11 +160,27 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 | `DSH_KNOWLEDGE_CARDS_ROOT` | 配置与缓存根目录（`kbs.json` / `cache.json`）；未设置时用 `~/.dsh/knowledge-cards` |
 | `DSH_KNOWLEDGE_CARDS_KB` | 默认知识库 id；未设置时用第一个 |
 | `OPENROUTER_API_KEY` | **JEV 默认线路**的 key（[openrouter.ai/keys](https://openrouter.ai/keys)），按 $0.042/M 输入计费、输出免费 |
-| `TYPESAFE_API_KEY` | JEV 直连兜底线路的 key（[console.typesafe.ai/keys](https://console.typesafe.ai/keys)）；仅当未设置 `OPENROUTER_API_KEY` 时生效 |
+| `TYPESAFE_API_KEY` | JEV 直连兜底线路的 key（[console.typesafe.ai/keys](https://console.typesafe.ai/keys)）；仅当 `OPENROUTER_API_KEY` 不可解析时生效 |
 | `JEV_MODEL` | 覆盖线路默认模型（如 `jev-1.13` / `jev-latest`） |
 | `JEV_ENDPOINT` | 覆盖 System One 端点（自建网关 / 灰度用） |
 
-> JEV key 只从环境变量读取，插件**不落盘、不写配置**；两个 key 都未配置时，「② JEV 判断」按钮返回 503 与配置指引。以上变量改动后需重启 `dsh web`（host 半进程启动时读取）。
+### JEV key 放哪里（DSH 凭据分层）
+
+插件不直接读 `process.env` 了事，而是经 DSH 官方的 **`ctx.credentials` 服务**解析 key，因此下面四层**全部生效**（优先级由高到低）：
+
+| 位置 | 说明 |
+|---|---|
+| 继承的进程环境变量 | 每次运行的显式意图（shell 变量 / CI secret / 容器 `-e`）；只读，不可被覆盖 |
+| `~/.dsh/.credentials.yaml` | **推荐**：DSH 托管凭据库（Models 页面写入处）。改完**无需重启**，下一次请求即生效 |
+| `<启动目录>/.env` | 启动 `dsh web` 时所在目录的 `.env` |
+| `~/.dsh/.env` | Harness-home 层的默认值 |
+
+- 面板状态行会显示 **`key 来源`**（`env` / `file` / `project-env` / `user-env`），可据此确认到底读到了哪一层。
+- **托管凭据库的内容不会进入 `process.env`**（DSH 有意如此），所以"只读环境变量"的写法看不到它——这正是本插件改用凭据服务的原因。
+- 服务不可用时（宿主未挂载凭据提供者）自动**回退**到 `process.env`，插件仍能加载；`credentialRef()` 只是运行时正则校验并原样返回变量名，因此插件**不引入任何新的运行时依赖**。
+- ⚠️ **其他插件目录的 `.env` 约定不适用于本插件**：`~/.dsh/knowledge-cards/.env` 不会被读取（那些是 Python 程序读自有文件的做法）。仓库根目录的 `.env` 同样不被读取，且已被 `.gitignore` 排除以防 `git add -A` 误提交。
+- `JEV_MODEL` / `JEV_ENDPOINT` **不是密钥**，只从环境变量读取（改动后需重启 `dsh web`）。
+- 两个 key 都无法解析时，「② JEV 判断」按钮返回 503 + `jev-key-missing` 与配置指引。
 
 ## 安全说明
 

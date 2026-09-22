@@ -5,6 +5,12 @@ node_modules/
 # --- runtime data (never commit) ---
 # the plugin's knowledge bases live in ~/.dsh/knowledge-cards, not here
 
+# --- secrets (never commit) ---
+# a key dropped here for a quick test must not ride along with `git add -A`
+.env
+.env.*
+!.env.example
+
 # --- misc ---
 .DS_Store
 Thumbs.db

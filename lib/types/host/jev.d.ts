@@ -31,14 +31,36 @@ export interface JevConfig {
     endpoint: string;
     model: string;
     apiKey: string;
+    /** Which layer supplied the key (`env` / `file` / `project-env` / `user-env`). */
+    keySource: string;
 }
 /**
- * Resolve the line from the environment. OpenRouter wins when its key is set
- * (one key for the whole setup, plus per-call usage.cost); a TypeSafe-only
- * setup keeps working untouched. JEV_ENDPOINT / JEV_MODEL override the
- * per-line defaults. Returns null when neither key is configured.
+ * Resolve one credential by reference. The host half plugs in DSH's
+ * `ctx.credentials` service here; without it we fall back to the process
+ * environment.
  */
-export declare function resolveJevConfig(env?: NodeJS.ProcessEnv): JevConfig | null;
+export type JevKeyLookup = (ref: string) => Promise<{
+    value: string;
+    source: string;
+} | undefined>;
+export declare function credentialLookup(ctx: {
+    reflect: {
+        get: (name: string, required?: false) => unknown;
+    };
+}): JevKeyLookup | undefined;
+/**
+ * Resolve the line and its key. OpenRouter wins when its key is set (one key
+ * for the whole setup, plus per-call usage.cost); a TypeSafe-only setup keeps
+ * working untouched.
+ *
+ * The credential lookup is consulted BEFORE the raw environment, because DSH's
+ * provider layers the inherited environment over `$DSH_HOME/.credentials.yaml`
+ * and then the project/user `.env` files — so it is a superset of what
+ * `process.env` holds, and it is the only view that can say where a key came
+ * from. The environment remains the fallback for hosts without the service.
+ * JEV_ENDPOINT / JEV_MODEL are not secrets and stay environment-only.
+ */
+export declare function resolveJevConfig(env?: NodeJS.ProcessEnv, lookup?: JevKeyLookup): Promise<JevConfig | null>;
 export interface JevCardState {
     slug: string;
     title: string;
@@ -58,6 +80,8 @@ export interface JevResult {
     kb: string;
     /** Which line served the request (openrouter | typesafe). */
     line: JevLine;
+    /** Layer that supplied the key (env / file / project-env / user-env). */
+    keySource: string;
     model: string;
     proposals: LineageProposal[];
     /** Token accounting from the API response when present. */

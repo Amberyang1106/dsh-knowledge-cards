@@ -36,6 +36,8 @@ export interface JevConfig {
   endpoint: string
   model: string
   apiKey: string
+  /** Which layer supplied the key (`env` / `file` / `project-env` / `user-env`). */
+  keySource: string
 }
 
 const TYPESAFE_ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
@@ -44,24 +46,82 @@ const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1/systemone'
 const OPENROUTER_MODEL = 'jev-1.13'
 
 /**
- * Resolve the line from the environment. OpenRouter wins when its key is set
- * (one key for the whole setup, plus per-call usage.cost); a TypeSafe-only
- * setup keeps working untouched. JEV_ENDPOINT / JEV_MODEL override the
- * per-line defaults. Returns null when neither key is configured.
+ * Resolve one credential by reference. The host half plugs in DSH's
+ * `ctx.credentials` service here; without it we fall back to the process
+ * environment.
  */
-export function resolveJevConfig(env: NodeJS.ProcessEnv = process.env): JevConfig | null {
-  const openrouterKey = (env.OPENROUTER_API_KEY ?? '').trim()
-  const typesafeKey = (env.TYPESAFE_API_KEY ?? '').trim()
-  const line: JevLine | null = openrouterKey !== '' ? 'openrouter' : typesafeKey !== '' ? 'typesafe' : null
-  if (line === null) return null
+export type JevKeyLookup = (ref: string) => Promise<{ value: string; source: string } | undefined>
+
+/**
+ * The `credentials` service, duck-typed on purpose: a plugin tree does not
+ * carry `@deepseek-ai/dsh-credentials`, and its `credentialRef()` is only a
+ * runtime pattern check that hands back the same string, so passing the
+ * variable name straight through is the identical call. Accessing the service
+ * through the reflection API (and tolerating its absence) is what keeps this
+ * plugin loading in a profile that has no credential provider.
+ */
+interface CredentialServiceLike {
+  resolve: (ref: string) => Promise<{ value: string; source: string } | undefined>
+}
+
+export function credentialLookup(ctx: { reflect: { get: (name: string, required?: false) => unknown } }): JevKeyLookup | undefined {
+  const service = ctx.reflect.get('credentials', false) as CredentialServiceLike | undefined
+  if (service === undefined || service === null || typeof service.resolve !== 'function') return undefined
+  return async (ref) => {
+    const hit = await service.resolve(ref)
+    if (hit === undefined || hit === null) return undefined
+    const value = typeof hit.value === 'string' ? hit.value : ''
+    const source = typeof hit.source === 'string' ? hit.source : 'credentials'
+    return { value, source }
+  }
+}
+
+/**
+ * Resolve the line and its key. OpenRouter wins when its key is set (one key
+ * for the whole setup, plus per-call usage.cost); a TypeSafe-only setup keeps
+ * working untouched.
+ *
+ * The credential lookup is consulted BEFORE the raw environment, because DSH's
+ * provider layers the inherited environment over `$DSH_HOME/.credentials.yaml`
+ * and then the project/user `.env` files — so it is a superset of what
+ * `process.env` holds, and it is the only view that can say where a key came
+ * from. The environment remains the fallback for hosts without the service.
+ * JEV_ENDPOINT / JEV_MODEL are not secrets and stay environment-only.
+ */
+export async function resolveJevConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  lookup?: JevKeyLookup,
+): Promise<JevConfig | null> {
+  const candidates: Array<{ ref: string; line: JevLine }> = [
+    { ref: 'OPENROUTER_API_KEY', line: 'openrouter' },
+    { ref: 'TYPESAFE_API_KEY', line: 'typesafe' },
+  ]
+  let chosen: { line: JevLine; apiKey: string; keySource: string } | null = null
+  for (const candidate of candidates) {
+    if (lookup !== undefined) {
+      const hit = await lookup(candidate.ref)
+      const value = (hit?.value ?? '').trim()
+      if (value !== '') {
+        chosen = { line: candidate.line, apiKey: value, keySource: hit?.source ?? 'credentials' }
+        break
+      }
+    }
+    const fromEnv = (env[candidate.ref] ?? '').trim()
+    if (fromEnv !== '') {
+      chosen = { line: candidate.line, apiKey: fromEnv, keySource: 'env' }
+      break
+    }
+  }
+  if (chosen === null) return null
   const endpointOverride = (env.JEV_ENDPOINT ?? '').trim()
   const modelOverride = (env.JEV_MODEL ?? '').trim()
   return {
-    line,
+    line: chosen.line,
     endpoint:
-      endpointOverride !== '' ? endpointOverride : line === 'openrouter' ? OPENROUTER_ENDPOINT : TYPESAFE_ENDPOINT,
-    model: modelOverride !== '' ? modelOverride : line === 'openrouter' ? OPENROUTER_MODEL : TYPESAFE_MODEL,
-    apiKey: line === 'openrouter' ? openrouterKey : typesafeKey,
+      endpointOverride !== '' ? endpointOverride : chosen.line === 'openrouter' ? OPENROUTER_ENDPOINT : TYPESAFE_ENDPOINT,
+    model: modelOverride !== '' ? modelOverride : chosen.line === 'openrouter' ? OPENROUTER_MODEL : TYPESAFE_MODEL,
+    apiKey: chosen.apiKey,
+    keySource: chosen.keySource,
   }
 }
 
@@ -107,6 +167,8 @@ export interface JevResult {
   kb: string
   /** Which line served the request (openrouter | typesafe). */
   line: JevLine
+  /** Layer that supplied the key (env / file / project-env / user-env). */
+  keySource: string
   model: string
   proposals: LineageProposal[]
   /** Token accounting from the API response when present. */
@@ -376,9 +438,11 @@ function mergeUsage(target: Record<string, unknown>, extra?: Record<string, unkn
  * proposal/preview/apply path is unaffected by how the round was split.
  */
 export async function runJevLineage(kb: KbConfig, config?: JevConfig): Promise<JevResult> {
-  const resolved = config ?? resolveJevConfig()
+  const resolved = config ?? (await resolveJevConfig())
   if (resolved === null) {
-    throw new Error('未配置 JEV key：请设置 OPENROUTER_API_KEY（默认线路）或 TYPESAFE_API_KEY 后重启 dsh web')
+    throw new Error(
+      '未配置 JEV key：请在 DSH 凭据库（~/.dsh/.credentials.yaml）或环境变量设置 OPENROUTER_API_KEY（默认线路）或 TYPESAFE_API_KEY',
+    )
   }
   const states = await buildJevState(kb)
   if (states.length === 0) throw new Error('该知识库没有字段卡（type=field）')
@@ -417,6 +481,7 @@ export async function runJevLineage(kb: KbConfig, config?: JevConfig): Promise<J
   return {
     kb: kb.id,
     line: resolved.line,
+    keySource: resolved.keySource,
     model,
     proposals: jevProposals(kb, states, answers),
     usage: sawUsage ? usage : undefined,
