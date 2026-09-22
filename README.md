@@ -1,6 +1,6 @@
 # @amberyang1106/dsh-knowledge-cards
 
-DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡片」入口，中央列展示知识库面板（卡片墙 / 资料 / 代码 / 看板 / 审核 / 知识库管理 / 回收站），宿主经 `/api/dsh-knowledge/*` 路由读写本地知识库，并提供 22 个 `wiki_*` agent 工具，让任意项目会话把领域知识作为上下文拉进来。支持 **`rules` 规则卡**（供 ROW PSD Recon 等对账管道读取执行）、**`field` 字段卡**（业务语义字段：定义/计算/实现/血缘/治理，配 5 分区结构化表单与一键血缘补齐）。
+DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡片」入口，中央列展示知识库面板（卡片墙 / 资料 / 代码 / 看板 / 审核 / 知识库管理 / 回收站），宿主经 `/api/dsh-knowledge/*` 路由读写本地知识库，并提供 22 个 `wiki_*` agent 工具，让任意项目会话把领域知识作为上下文拉进来。支持 **`rules` 规则卡**（供 ROW PSD Recon 等对账管道读取执行）、**`field` 字段卡**（业务语义字段：定义/计算/实现/血缘/治理，配 5 分区结构化表单与一键血缘补齐），血缘补齐可选三条通道：**确定性预扫**（零成本）/ **JEV（TypeSafe System One，按 32k 上下文分批判定）** / **会话内 AI**。
 
 基于 [Karpathy 的 LLM Wiki 方法论](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 与 [nashsu/llm_wiki](https://github.com/nashsu/llm_wiki) 的实现范式：**原始资料（只读）→ LLM 维护的知识卡片 → schema/purpose 规则**。
 
@@ -42,9 +42,13 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
   - 回收站：已删除的卡片与知识库，逐项**恢复**或**彻底删除**（删除是软删除——卡片在 `<kb>/.trash/`、知识库在 `~/.dsh/knowledge-cards/.trash/`，可随时恢复；彻底删除才物理清除）
     <img width="1990" height="454" alt="image" src="https://github.com/user-attachments/assets/0976e3fe-47ad-48aa-bb40-fe4ba40cd391" />
 
-- **宿主 `/api/dsh-knowledge/*` 路由（31 条）**：kbs（列表/创建）、cards（列表/搜索）、card（详情，附解析后的 frontmatter）、commit、card/edit、**card/create（手动建卡）**、**card/delete · card/restore · card/purge（卡片回收站）**、**kbs/delete · kbs/restore · kbs/purge（知识库回收站）**、**trash**、**rules（规则集编译）**、**lineage/scan · lineage/llm-status · lineage/run · lineage/proposals · lineage/apply（血缘补齐）**、log、sources、lint、import-cards、rebuild、code（列表/上传）、code/content、code/delete、reviews、reviews/resolve、audit、audit-prompt
+- **宿主 `/api/dsh-knowledge/*` 路由（32 条）**：kbs（列表/创建）、cards（列表/搜索）、card（详情，附解析后的 frontmatter）、commit、card/edit、**card/create（手动建卡）**、**card/delete · card/restore · card/purge（卡片回收站）**、**kbs/delete · kbs/restore · kbs/purge（知识库回收站）**、**trash**、**rules（规则集编译）**、**lineage/scan · lineage/jev · lineage/llm-status · lineage/run · lineage/proposals · lineage/apply（血缘补齐）**、log、sources、lint、import-cards、rebuild、code（列表/上传）、code/content、code/delete、reviews、reviews/resolve、audit、audit-prompt
 - **规则卡（type=rules）+ 规则集接口**：面板「+ 新建卡片」选 `rules` 类型可直接编写规则卡（type/title/rule_id/rule_set/status/conditions/outcome/test_cases 整卡 frontmatter 为**嵌套 YAML**，建卡与编辑提供模板化 YAML 编辑器）；生命周期 `draft → review → active → deprecated`。`GET /api/dsh-knowledge/rules?kb&ruleSet&status` 批量编译 active（且生效期内）规则：结构校验（必填字段 / 状态机 / 操作符白名单 eq/ne/gt/ge/lt/le/in/not_in/is_blank/is_not_blank/contains）、过滤非 active、生成内容版本 `sha256:` 哈希，返回 `{ruleSet, version, hash, rules[], invalidRules[]}`——坏规则显式报告、不静默丢。规则供 ROW PSD Recon 等对账程序运行时读取执行；新增/停用场景只需维护卡片，无需改消费方代码。
 - **字段卡（type=field）+ 一键血缘补齐**：一张卡 = 一个**业务语义字段**（如 Revenue），其各系统物理实现写在卡内；结构化元数据（field_kind / data_type / aggregation / unit / source_table / source_field / aliases / status / review_status / evidence_level / domain / workstream …）进 frontmatter，正文写业务定义、计算逻辑、口径、血缘与校验。面板对 field 卡提供 **5 分区结构化表单**（① Overview ② Logic ③ Implementation ④ Lineage & Impact ⑤ Governance），卡片详情显示 **🧬 血缘** 区（依赖/被使用/实现于/受约束，能对上卡片的目标可点击跳转，物理表/报表等外部目标显示为灰色胶囊）。卡片 tab 的 **「🧬 血缘补齐」按钮**：① 确定性预扫（零成本、不改卡，从正文与元数据挖候选边 + 补反向 used_by + 体检元数据缺口）→ ② 可选 AI 分析（发起一次 agent 运行读全库字段卡，把带证据与置信度的提案写入待审文件）→ ③ 预览勾选后「应用选中」（确定性写入：关系取并集、统一标 `inferred`、已 confirmed 的卡不降级、每卡记看板明细）。配套 `wiki_lint` 血缘体检：悬空 depends_on / 单向不对称 / 自指 / 环。
+- **② JEV 判断（一键，System One 模型）**：Jev 不是聊天模型——它把一段 `state` 与一组**类型化问题**（`noul` 概率 / `choice` 枚举 / `score` 评分）对照后返回带置信度的结构化答案，因此它的**请求体也是 `{model, state, questions}`，不是 chat/completions**。本插件把血缘补齐拆成原子问题（每对有序卡片一个 noul「A 是否直接依赖 B」+ 每卡一个 field_kind 与可加性判定），把答案映射回普通 `LineageProposal`（`source: 'jev'`、带 `score`），所以预览 → 勾选 → 应用仍走同一条确定性通道。
+  - **两条可互换线路**：默认 **OpenRouter**（`POST https://openrouter.ai/api/v1/systemone`，模型 `typesafe/jev-1.13`）；只有 TypeSafe key 时自动走 **直连兜底**（`POST https://api.typesafe.ai/v1/systemone`，模型 `jev-latest`）。两者的请求/响应形状一致，响应里 `model` 会回带版本化 id（如 `typesafe/jev-1.13-20260917`），面板会显示实际服务线路。
+  - **外发内容最小化**：只发元数据 + 去掉代码围栏/行内代码/长数字串的正文摘要（≤400 字符/卡），卡片内容在 `state` 里各出现一次，问题仅按 slug 引用。
+  - **分批**：问题数随卡片数平方增长（20 张 = 420 个问题），单请求装不下 32k，因此按 60 个问题一批拆成多次请求（20 张 = 7 批，最大单批约 40k 字符 ≈ 10–14k tokens），答案合并、`usage`（含 OpenRouter 的 `usage.cost`）累加；单轮上限 20 张字段卡。
 - **22 个 agent 工具**（任意项目会话可用，跨项目上下文注入）：`wiki_kbs` / `wiki_create_kb` / `wiki_search` / `wiki_read` / `wiki_edit_card`（可写结构化 `relations` 与字段 `metadata`）/ `wiki_ingest` / `wiki_commit` / `wiki_import_cards` / `wiki_lint` / `wiki_audit` / `wiki_review_submit` / `wiki_reviews` / `wiki_code_list` / `wiki_code_read` / **`wiki_card_delete` / `wiki_card_restore` / `wiki_card_purge`** / **`wiki_kb_delete` / `wiki_kb_restore` / `wiki_kb_purge`** / **`wiki_trash_list`** / **`wiki_lineage_propose`**（提交血缘提案，不直接改卡）
 
 ## 知识库布局（每库）
@@ -70,10 +74,10 @@ DSH Web GUI 的 **知识卡片** 侧边栏插件：侧边栏新增「知识卡�
 > ⚠️ **仓库为私有**：安装前需先被授予该仓库的读权限（维护者将你加为 GitHub 协作者，或你已在组织的允许列表内）。首次安装时 git 会弹出 GitHub 登录，用你自己的账号登录即可；未授权时会报 `Authentication failed` / `could not read Username`。
 
 ```sh
-dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.2
+dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.5.0
 ```
 
-> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.4.2` 换成新 tag。
+> 安装命令中的 tag 请使用**最新发布版本**（见仓库 Tags 页），升级时把 `#v0.5.0` 换成新 tag。
 
 重启 `dsh web`，侧边栏出现「知识卡片」。你的知识库数据在 `~/.dsh/knowledge-cards/`，安装/升级/卸载插件均不影响。
 
@@ -103,7 +107,7 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 | 模式 | 命令 | 用途 |
 |---|---|---|
 | 开发模式（link:） | `dsh plugin --profile web add C:/Users/yangtt16/dsh-knowledge-cards` | 日常开发：改代码 → build → 重启即生效 |
-| 发布验证模式（github spec） | `dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.2` | 验证用户视角的安装；与 README 安装命令一致 |
+| 发布验证模式（github spec） | `dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.5.0` | 验证用户视角的安装；与 README 安装命令一致 |
 | 卸载 | `dsh plugin --profile web remove @amberyang1106/dsh-knowledge-cards` | 移除依赖与 bundles 条目 |
 
 原理：`dsh plugin` 把参数转发给 profile 目录里的 pnpm，成功后自动 reconcile `dsh.profile.bundles`——同名包增删 spec 不会双重挂载。
@@ -114,7 +118,7 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 2. 编辑 `src/` 下的 `client/` / `host/` / `core/`
 3. `pnpm build`（`tsc -b && tsdown`，重新生成 `lib/`）——**每次改完源码必做**：link: 只链接目录，宿主加载的是构建产物 `lib/`
 4. 重启 `dsh web` → 侧边栏「知识卡片」验证；host 半（路由/工具/提示词）改动必须重启，client 半改动稳妥起见也重启
-5. 质量门：`pnpm typecheck` && `pnpm test`（4 个 vitest 测试文件、28 个用例）通过后再提交
+5. 质量门：`pnpm typecheck` && `pnpm test`（7 个 vitest 测试文件、54 个用例）通过后再提交
 
 ### 发布更新循环（给用户发新版本）
 
@@ -122,9 +126,9 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 2. 更新 README（功能变化、Roadmap 里已完成项勾掉）
 3. **同步本地 dsh-wiki 工作区 README**（`C:\Users\yangtt16\OneDrive - Lenovo\AI Test\Finance KM\dsh-wiki\README.md`）：功能特性 / 路由数 / 工具数 / 面板 tab / 测试数 / Changelog / 后续计划，与本仓库 README、CHANGELOG.md 保持口径一致
 4. `pnpm build` 确保 `lib/` 同步 → `git add -A && git commit`
-5. `git tag v0.4.2 && git push && git push --tags`
-6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.4.2` → 重启验证 → 再切回 link: 开发
-7. 更新 GitHub Release（`gh release create v0.4.2 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.4.2` 重装
+5. `git tag v0.5.0 && git push && git push --tags`
+6. （可选）验证用户视角：`dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#v0.5.0` → 重启验证 → 再切回 link: 开发
+7. 更新 GitHub Release（`gh release create v0.5.0 --notes-file ...`），通知用户把安装命令的 tag 换成 `#v0.5.0` 重装
 
 ### 关键注意点
 
@@ -138,6 +142,7 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 以下能力当前**尚未实现**，供使用者了解功能边界：
 
 - **审核队列的 agent 代为处理**：当前 `reviews/resolve` 仅面板「审核」tab 可用（预定义操作 + 预生成搜索查询），agent 只能 `wiki_review_submit` 提交、`wiki_reviews` 查看，不能直接 resolve / 跳过——规划中让 agent 能按用户指示代为处理审核项。
+- **JEV 单轮字段卡上限 20 张**：配对问题数随卡片数平方增长（20 张 = 420 个问题），当前已按每批 60 个问题拆成多次请求（20 张 = 7 批、最大单批约 40k 字符），但更大的库仍需人工分批；规划中按 `subject_area` 自动分批并跨轮合并提案。
 - **血缘图谱与 Impact Analysis 接口**：结构化血缘（depends_on / used_by / implemented_in / governed_by）与面板预览已就绪，但还缺「给一个字段 → 返回受影响字段/报表」的图查询接口与可视化；此外 ② AI 分析的「宿主自动 spawn」路径受限于 DSH 要求 parent agent，当前以「一键复制指令 + 会话内执行」实现。
 - **资料源在线上传**：当前 `raw/sources/` 需手动放入文件（面板「代码」tab 已支持上传而「资料」tab 未支持）；规划中支持资料拖拽上传 + 自动入待摄入清单。
 - **知识库导出 / 备份**：当前无导出接口（备份 = 直接拷贝 `~/.dsh/knowledge-cards/` 目录）；规划中提供 JSON / Markdown 导出与一键备份。
@@ -153,6 +158,12 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 |---|---|
 | `DSH_KNOWLEDGE_CARDS_ROOT` | 配置与缓存根目录（`kbs.json` / `cache.json`）；未设置时用 `~/.dsh/knowledge-cards` |
 | `DSH_KNOWLEDGE_CARDS_KB` | 默认知识库 id；未设置时用第一个 |
+| `OPENROUTER_API_KEY` | **JEV 默认线路**的 key（[openrouter.ai/keys](https://openrouter.ai/keys)），按 $0.042/M 输入计费、输出免费 |
+| `TYPESAFE_API_KEY` | JEV 直连兜底线路的 key（[console.typesafe.ai/keys](https://console.typesafe.ai/keys)）；仅当未设置 `OPENROUTER_API_KEY` 时生效 |
+| `JEV_MODEL` | 覆盖线路默认模型（如 `jev-1.13` / `jev-latest`） |
+| `JEV_ENDPOINT` | 覆盖 System One 端点（自建网关 / 灰度用） |
+
+> JEV key 只从环境变量读取，插件**不落盘、不写配置**；两个 key 都未配置时，「② JEV 判断」按钮返回 503 与配置指引。以上变量改动后需重启 `dsh web`（host 半进程启动时读取）。
 
 ## 安全说明
 
@@ -172,7 +183,7 @@ dsh plugin --profile web add github:Amberyang1106/dsh-knowledge-cards#<新tag>
 ```sh
 pnpm install
 pnpm build    # tsc -b && tsdown → lib/index.js（host 半）+ lib/client.js（browser 半）
-pnpm test     # vitest：4 个测试文件、28 个用例
+pnpm test     # vitest：7 个测试文件、54 个用例
 pnpm typecheck
 pnpm watch    # tsdown --watch，client 半改动自动重建
 ```

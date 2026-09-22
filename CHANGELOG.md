@@ -2,6 +2,33 @@
 
 本插件的版本发布记录。安装/升级方式见 [README](README.md#安装)。
 
+## v0.5.0（2026-09-22）— JEV（System One）血缘判定 + OpenRouter 线路 + 单轮 20 张卡
+
+### ✨ 新功能 1：`② JEV 判断（一键）`——用「只输出结构化决策」的模型做字段血缘判定
+
+- **背景**：Jev 不是聊天模型。它把一段 `state` 与一组**类型化问题**（`noul` 概率 / `choice` 枚举 / `score` 评分）对照后返回带置信度的结构化答案——**请求体是 `{model, state, questions}`，不是 `chat/completions`**，所以 chat SDK 用不了。
+- **做法**：把血缘补齐拆成原子问题（每对有序卡片一个 `noul`：「A 是否**直接**依赖 B，而不是兄弟属性/仅提及/间接依赖」+ 每卡一个 `field_kind` 枚举判定与一个可加性判定），把答案映射回普通 `LineageProposal`（`source: 'jev'`、带 0–1 `score` 与 high/medium/low 置信度），因此**预览 → 勾选 → 应用仍走同一条确定性通道**，标 `inferred`、已 `confirmed` 不降级。
+- **外发最小化**：只发元数据 + 去掉代码围栏/行内代码/长数字串的正文摘要（≤400 字符/卡）。
+- **接口**：`POST /api/dsh-knowledge/lineage/jev`；未配置 key 时 503 + `jev-key-missing`（面板显示配置指引），API 报错时 502 并原样带出上游信息。
+
+### ✨ 新功能 2：两条可互换线路（默认 OpenRouter）
+
+- **默认 OpenRouter**：`POST https://openrouter.ai/api/v1/systemone`，模型 `typesafe/jev-1.13`，key 读 `OPENROUTER_API_KEY`。响应额外返回 `id` / `provider` / `usage.cost`，面板显示实际服务线路与请求体量。
+- **直连兜底**：仅当未设置 `OPENROUTER_API_KEY` 时走 `POST https://api.typesafe.ai/v1/systemone`（模型 `jev-latest`，key 读 `TYPESAFE_API_KEY`）——已有 TypeSafe 直连配置的用户**无需改动**。
+- `JEV_MODEL` / `JEV_ENDPOINT` 可覆盖模型与端点；响应里的 `model` 会回带版本化 id（如 `typesafe/jev-1.13-20260917`），因此按原样展示、不做相等断言。
+- 价格两线路一致：$0.042/M 输入、输出免费。
+
+### 🐛 修复：单轮 20 张字段卡的承诺此前不成立
+
+- **问题**：问题的 `instructions` 把每对卡片的正文摘要都内联了一份，于是请求体随卡片数**平方增长**，实测（ISG 真实卡片内容）：7 张卡 62k 字符，10 张已到 32k 上下文边缘，12 张起超出，20 张达 508k 字符（约 127k tokens，超限 4 倍）——标签写着「上限 20 张」，实际约 10 张就发不出去。
+- **两处修复**：① 卡片内容只在 `state.cards` 出现一次，问题改为**仅按 slug 引用**（同一批卡片体量降约 43%）；② 一轮按**每批 60 个问题**拆成多次请求，答案合并、`usage` 累加。
+- **实测结果**（真实代码路径 + 真实卡内容，20 张卡）：420 个问题 → **7 批请求**，最大单批 40,667 字符（≈10–14k tokens），稳在 32k 之内，输入成本约 $0.004。另加**每批请求体预算硬闸**（96k 字符，按保守 ≤3 字符/token 折算 32k），超限显式报错而非静默截断。
+- 测试 54/54（新增 3 个：JSON 去重保证、线路解析优先级、分批与 usage 合并）。
+
+> ⚠️ **验证状态**：JEV 的**真实 API 调用尚未执行过**（本机无 key），`fetch` 路径由桩测试覆盖；线路连通性仅实证到「不带 key POST OpenRouter SystemOne 返回 401 而非 404」（路由存在）。模型输出质量、真实 `input_tokens` 与阈值（0.8 自动选 / 0.5–0.8 预选）需一次真实运行校准。
+
+---
+
 ## v0.4.2（2026-09-21）— AI 分析改为「会话内执行」（一键复制指令）
 
 - **背景**：宿主 `subagents.startContinuable` 要求 `parent: Agent`（只能由 agent 轮次内发起），而面板按钮走 HTTP 路由、拿不到 Agent；强行注入「某个会话」还可能跑错会话。上一版的宿主 spawn 路径因此在点击时报 `Cannot read properties of undefined (reading 'id')`。

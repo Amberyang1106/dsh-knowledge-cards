@@ -454,14 +454,14 @@ function LineagePanel({ kbId, onClose, onApplied }: { kbId: string; onClose: () 
     setError(null)
     setStatus(t(undefined, 'lineage.jevRunning'))
     try {
-      const data = await api<{ result: { proposals: LineageProposalFace[]; model: string; questionCount: number; sentCards: number } }>('/api/dsh-knowledge/lineage/jev', {
+      const data = await api<{ result: { proposals: LineageProposalFace[]; line: string; model: string; questionCount: number; sentCards: number; requests: number; payloadChars: number } }>('/api/dsh-knowledge/lineage/jev', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ kb: kbId }),
       })
       mergeProposals(data.result.proposals)
       setStatus(t(undefined, 'lineage.jevDone', {
-        n: data.result.proposals.length, model: data.result.model, questions: data.result.questionCount, cards: data.result.sentCards,
+        n: data.result.proposals.length, line: data.result.line, model: data.result.model, questions: data.result.questionCount, cards: data.result.sentCards, requests: data.result.requests, payload: data.result.payloadChars,
       }))
     } catch (err) {
       const message = String((err as Error).message ?? err)

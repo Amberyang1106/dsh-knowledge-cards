@@ -9,8 +9,18 @@
  * the typed answers back into ordinary LineageProposals — the preview/apply
  * path stays exactly the same.
  *
- * Endpoint/limits (docs.typesafe.ai): POST https://api.typesafe.ai/v1/systemone,
- * Bearer key, model jev-latest, 64k context, $42/Btok input (output free).
+ * Two interchangeable lines carry the same NATIVE System One shape, so the
+ * request body is identical either way:
+ *  - OpenRouter (default): POST https://openrouter.ai/api/v1/systemone with
+ *    model typesafe/jev-1.13 (bare `jev-1.13` / `jev-latest` are mapped onto
+ *    the typesafe/ namespace). Verified 2026-09: the route answers 401 rather
+ *    than 404 without a key, and the model is missing from GET /api/v1/models
+ *    only because its output modality is `decisions`, not `text`. OpenRouter
+ *    does NOT expose Jev through the OpenAI-compatible chat endpoint.
+ *  - TypeSafe direct (fallback): POST https://api.typesafe.ai/v1/systemone.
+ * Request {model, state, questions} → response {model, answers, usage};
+ * OpenRouter additionally returns id / provider / usage.cost.
+ * Context is 32k tokens, $0.042/M input, output free, no parameters supported.
  * @module dsh-knowledge-cards/host/jev
  */
 
@@ -18,11 +28,62 @@ import { parseFrontmatter } from '../core/frontmatter.ts'
 import type { KbConfig, LineageProposal } from '../core/types.ts'
 import { listCards, readCard } from './store.ts'
 
-/** Endpoint and model (the docs' single evaluation endpoint). */
-const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
-const JEV_MODEL = 'jev-latest'
+/** Which line serves the request. */
+export type JevLine = 'openrouter' | 'typesafe'
+
+export interface JevConfig {
+  line: JevLine
+  endpoint: string
+  model: string
+  apiKey: string
+}
+
+const TYPESAFE_ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
+const TYPESAFE_MODEL = 'jev-latest'
+const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1/systemone'
+const OPENROUTER_MODEL = 'jev-1.13'
+
+/**
+ * Resolve the line from the environment. OpenRouter wins when its key is set
+ * (one key for the whole setup, plus per-call usage.cost); a TypeSafe-only
+ * setup keeps working untouched. JEV_ENDPOINT / JEV_MODEL override the
+ * per-line defaults. Returns null when neither key is configured.
+ */
+export function resolveJevConfig(env: NodeJS.ProcessEnv = process.env): JevConfig | null {
+  const openrouterKey = (env.OPENROUTER_API_KEY ?? '').trim()
+  const typesafeKey = (env.TYPESAFE_API_KEY ?? '').trim()
+  const line: JevLine | null = openrouterKey !== '' ? 'openrouter' : typesafeKey !== '' ? 'typesafe' : null
+  if (line === null) return null
+  const endpointOverride = (env.JEV_ENDPOINT ?? '').trim()
+  const modelOverride = (env.JEV_MODEL ?? '').trim()
+  return {
+    line,
+    endpoint:
+      endpointOverride !== '' ? endpointOverride : line === 'openrouter' ? OPENROUTER_ENDPOINT : TYPESAFE_ENDPOINT,
+    model: modelOverride !== '' ? modelOverride : line === 'openrouter' ? OPENROUTER_MODEL : TYPESAFE_MODEL,
+    apiKey: line === 'openrouter' ? openrouterKey : typesafeKey,
+  }
+}
+
 /** Guard: pairwise questions grow as N² — refuse to send a giant batch. */
 const MAX_CARDS = 20
+/**
+ * Questions per HTTP request. Pairwise reasoning costs N(N-1) questions, which
+ * no single 32k request can hold past ~11 cards, so a round is split into
+ * consecutive batches of this size and the answers are merged. Each batch
+ * re-sends the state (~470 chars per card), which is cheap next to the
+ * questions: at 20 cards that is 7 requests and roughly $0.004 of input.
+ */
+const QUESTIONS_PER_REQUEST = 60
+/**
+ * Per-request budget in characters. The System One context is 32k tokens and
+ * the tokenizer is undocumented ("Other"), so we assume a conservative ≤3
+ * chars/token → 96k chars ≈ 32k tokens. Measured against the real ISG cards a
+ * 60-question batch lands near 40k chars, well inside it; every run reports
+ * back the largest request it built so this can be calibrated against a live
+ * usage.input_tokens reading.
+ */
+const MAX_PAYLOAD_CHARS = 96_000
 /** Excerpt budget per card in the minimized state. */
 const EXCERPT_CHARS = 400
 
@@ -44,6 +105,8 @@ export interface JevCardState {
 
 export interface JevResult {
   kb: string
+  /** Which line served the request (openrouter | typesafe). */
+  line: JevLine
   model: string
   proposals: LineageProposal[]
   /** Token accounting from the API response when present. */
@@ -52,6 +115,11 @@ export interface JevResult {
   sentCards: number
   stateChars: number
   questionCount: number
+  /** HTTP requests the round was split into (questions are batched). */
+  requests: number
+  /** Largest single request body, and the per-request guard it had to clear. */
+  payloadChars: number
+  budgetChars: number
 }
 
 /**
@@ -98,14 +166,17 @@ export async function buildJevState(kb: KbConfig): Promise<JevCardState[]> {
 }
 
 type JevQuestion =
-  | { type: 'noul'; instructions: unknown; criteria?: Record<string, unknown> }
-  | { type: 'choice'; instructions: unknown; criteria: Record<string, unknown> }
-  | { type: 'score'; instructions: unknown; criteria: string[] }
+  | { type: 'noul'; instructions: string; criteria?: Record<string, string> }
+  | { type: 'choice'; instructions: string; criteria: Record<string, string> }
+  | { type: 'score'; instructions: string; criteria: string[] }
 
 /**
- * Atomic questions: one noul per ordered pair asking whether the first card's
- * documented logic derives from the second (direct dependency only). Keys are
- * local to us (the API never sends them to the model).
+ * Atomic questions. Card content lives in `state.cards` exactly once and every
+ * question refers to a card only by slug — that is what keeps the body inside
+ * the 32k context. (The first version inlined both cards of every ordered pair
+ * into the question, so the request grew as N² and already hit the wall at ten
+ * cards.) Keys are local to us; the API never sees them.
+ * `dep::A::B` asks whether A derives its values from B as a DIRECT dependency.
  */
 export function buildJevQuestions(states: JevCardState[]): Record<string, JevQuestion> {
   const questions: Record<string, JevQuestion> = {}
@@ -114,32 +185,17 @@ export function buildJevQuestions(states: JevCardState[]): Record<string, JevQue
       if (source.slug === target.slug) continue
       questions[`dep::${source.slug}::${target.slug}`] = {
         type: 'noul',
-        instructions: {
-          source_card: {
-            slug: source.slug,
-            title: source.title,
-            description: source.description,
-            source_table: source.source_table,
-            excerpt: source.excerpt,
-          },
-          target_card: {
-            slug: target.slug,
-            title: target.title,
-            description: target.description,
-            source_table: target.source_table,
-            excerpt: target.excerpt,
-          },
-          question: `Does \`source_card\`'s documented logic derive its values FROM \`target_card\` as a DIRECT dependency (its own formula/取数步骤 reads the target), rather than merely mentioning it, being a sibling attribute of the same object, or depending on it only indirectly through a third card?`,
-        },
+        instructions: `In state.cards, does slug "${source.slug}" derive its values FROM slug "${target.slug}" as a DIRECT dependency (its own documented formula or 取数步骤 reads that card), rather than merely mentioning it, being a sibling attribute of the same object, or depending on it only indirectly through a third card?`,
         criteria: {
-          true: 'source_card directly reads/computes from target_card (direct dependency).',
-          false: 'No such direct dependency: sibling attribute, mere mention, external table/tool, or transitive dependency.',
+          true: `state.cards["${source.slug}"] directly reads or computes from state.cards["${target.slug}"].`,
+          false:
+            'No direct dependency: sibling attribute, mere mention, external table/tool, or only an indirect dependency.',
         },
       }
     }
     questions[`kind::${source.slug}`] = {
       type: 'choice',
-      instructions: `Which field_kind best describes \`card\` (slug ${source.slug}, title ${source.title}, data_type ${source.data_type ?? 'unknown'})?`,
+      instructions: `Which field_kind best describes state.cards["${source.slug}"]?`,
       criteria: {
         measure: 'A numeric amount/quantity that is aggregated (revenue, cost, count).',
         dimension: 'A descriptive attribute used for grouping/filtering (id, name, number, office).',
@@ -154,8 +210,11 @@ export function buildJevQuestions(states: JevCardState[]): Record<string, JevQue
     }
     questions[`agg::${source.slug}`] = {
       type: 'noul',
-      instructions: `Is it correct to treat \`card\` (slug ${source.slug}, field_kind ${source.field_kind ?? 'unknown'}, data_type ${source.data_type ?? 'unknown'}) as 'additive' — i.e. summing it across rows produces a meaningful total?`,
-      criteria: { true: 'Summing the values is meaningful.', false: 'Summing is meaningless (dimension/ratio/percentage/flag).' },
+      instructions: `Is it correct to treat state.cards["${source.slug}"] as 'additive' — i.e. summing it across rows produces a meaningful total?`,
+      criteria: {
+        true: 'Summing the values is meaningful.',
+        false: 'Summing is meaningless (dimension/ratio/percentage/flag).',
+      },
     }
   }
   return questions
@@ -170,27 +229,34 @@ interface JevAnswer {
   probabilities?: Record<string, number>
 }
 
-/** Call the TypeSafe evaluation endpoint. Throws on transport/API errors. */
+/** Call the System One endpoint. Throws on transport/API errors. */
 export async function callJev(
   state: unknown,
   questions: Record<string, JevQuestion>,
-  options: { apiKey: string; timeoutMs?: number },
+  options: Pick<JevConfig, 'apiKey' | 'endpoint' | 'model'> & { timeoutMs?: number },
 ): Promise<{ model: string; answers: Record<string, JevAnswer>; usage?: Record<string, unknown> }> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 90_000)
   try {
-    const response = await fetch(JEV_ENDPOINT, {
+    const response = await fetch(options.endpoint, {
       method: 'POST',
       headers: { authorization: `Bearer ${options.apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ state, model: JEV_MODEL, questions }),
+      body: JSON.stringify({ state, model: options.model, questions }),
       signal: controller.signal,
     })
     const text = await response.text()
     if (!response.ok) {
       throw new Error(`jev HTTP ${response.status}: ${text.slice(0, 300)}`)
     }
-    const parsed = JSON.parse(text) as { model?: string; answers?: Record<string, JevAnswer>; usage?: Record<string, unknown> }
-    return { model: parsed.model ?? JEV_MODEL, answers: parsed.answers ?? {}, usage: parsed.usage }
+    const parsed = JSON.parse(text) as {
+      model?: string
+      answers?: Record<string, JevAnswer>
+      usage?: Record<string, unknown>
+    }
+    // OpenRouter answers with the versioned id it routed to (e.g.
+    // typesafe/jev-1.13-20260917), so the reply is reported as-is rather than
+    // compared against the requested model.
+    return { model: parsed.model ?? options.model, answers: parsed.answers ?? {}, usage: parsed.usage }
   } finally {
     clearTimeout(timer)
   }
@@ -279,24 +345,86 @@ export function jevProposals(
   return proposals
 }
 
-/** Full JEV round: state → questions → API → proposals. */
-export async function runJevLineage(kb: KbConfig, apiKey: string): Promise<JevResult> {
+/** Split a question map into consecutive batches of at most `size` entries. */
+function chunkQuestions(
+  questions: Record<string, JevQuestion>,
+  size: number,
+): Array<Record<string, JevQuestion>> {
+  const entries = Object.entries(questions)
+  const batches: Array<Record<string, JevQuestion>> = []
+  for (let index = 0; index < entries.length; index += size) {
+    batches.push(Object.fromEntries(entries.slice(index, index + size)))
+  }
+  return batches.length > 0 ? batches : [{}]
+}
+
+/** Sum the numeric counters of successive usage reports (tokens, cost). */
+function mergeUsage(target: Record<string, unknown>, extra?: Record<string, unknown>): void {
+  if (extra === undefined) return
+  for (const [key, value] of Object.entries(extra)) {
+    if (typeof value === 'number' && typeof target[key] === 'number') {
+      target[key] = (target[key] as number) + value
+    } else {
+      target[key] = value
+    }
+  }
+}
+
+/**
+ * Full JEV round: state → questions → batches → budget gate → API → proposals.
+ * Answers from every batch are merged into one map, so the downstream
+ * proposal/preview/apply path is unaffected by how the round was split.
+ */
+export async function runJevLineage(kb: KbConfig, config?: JevConfig): Promise<JevResult> {
+  const resolved = config ?? resolveJevConfig()
+  if (resolved === null) {
+    throw new Error('未配置 JEV key：请设置 OPENROUTER_API_KEY（默认线路）或 TYPESAFE_API_KEY 后重启 dsh web')
+  }
   const states = await buildJevState(kb)
   if (states.length === 0) throw new Error('该知识库没有字段卡（type=field）')
   if (states.length > MAX_CARDS) {
-    throw new Error(`字段卡 ${states.length} 张，超过 JEV 单轮上限 ${MAX_CARDS} 张；请按 subject_area 分批，或先用确定性预扫`)
+    throw new Error(
+      `字段卡 ${states.length} 张，超过 JEV 单轮上限 ${MAX_CARDS} 张（问题数随卡片数平方增长）；请按 subject_area 分批，或先用确定性预扫`,
+    )
   }
   const questions = buildJevQuestions(states)
   const state = { kb: kb.id, cards: states }
   const stateJson = JSON.stringify(state)
-  const response = await callJev(state, questions, { apiKey })
+  const batches = chunkQuestions(questions, QUESTIONS_PER_REQUEST)
+  const answers: Record<string, JevAnswer> = {}
+  const usage: Record<string, unknown> = {}
+  let sawUsage = false
+  let model = resolved.model
+  let payloadChars = 0
+  for (const batch of batches) {
+    const batchChars = JSON.stringify({ state, model: resolved.model, questions: batch }).length
+    if (batchChars > MAX_PAYLOAD_CHARS) {
+      throw new Error(
+        `JEV 单批请求体 ${batchChars} 字符，超过预算 ${MAX_PAYLOAD_CHARS}（32k 上下文的保守估计；本轮字段卡 ${states.length} 张、每批 ${Object.keys(batch).length} 个问题）；请减少字段卡数量后重试`,
+      )
+    }
+    payloadChars = Math.max(payloadChars, batchChars)
+    const response = await callJev(state, batch, {
+      apiKey: resolved.apiKey,
+      endpoint: resolved.endpoint,
+      model: resolved.model,
+    })
+    Object.assign(answers, response.answers)
+    if (response.usage !== undefined) sawUsage = true
+    mergeUsage(usage, response.usage)
+    model = response.model ?? model
+  }
   return {
     kb: kb.id,
-    model: response.model,
-    proposals: jevProposals(kb, states, response.answers),
-    usage: response.usage,
+    line: resolved.line,
+    model,
+    proposals: jevProposals(kb, states, answers),
+    usage: sawUsage ? usage : undefined,
     sentCards: states.length,
     stateChars: stateJson.length,
     questionCount: Object.keys(questions).length,
+    requests: batches.length,
+    payloadChars,
+    budgetChars: MAX_PAYLOAD_CHARS,
   }
 }
